@@ -1,6 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:nano_tracer_app/screens/settings_screen.dart';
-import 'package:nano_tracer_app/screens/tag_screen.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:nano_trace_app/models/tracker_tag.dart';
+import 'package:nano_trace_app/screens/widgets/tag_list.dart';
+import 'package:nano_trace_app/services/storage_service.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:nano_trace_app/screens/utils/newtag_sheet.dart';
+import 'package:nano_trace_app/screens/settings_screen.dart';
+
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -10,7 +16,67 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  List<String> tags = ["Wallet Tag", "Home key Tag", "Car key Tag"];
+  List<TrackerTag> myTags = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _initData();
+  }
+
+  Future<void> _initData() async {
+    final loadedTags = await StorageService.loadTags();
+    setState(() {
+      myTags = loadedTags;
+    });
+
+    // START THE SCAN HERE
+    // Using continuous scan so the list updates in real-time
+    try {
+      await FlutterBluePlus.startScan(
+        timeout: null, // null means scan until manually stopped
+        continuousUpdates: true,
+        androidUsesFineLocation: true,
+      );
+    } catch (e) {
+      debugPrint("Scan Error: $e");
+    }
+  }
+
+  @override
+  void dispose() {
+    FlutterBluePlus.stopScan(); // Stop scanning when app/screen closes
+    super.dispose();
+  }
+
+  Future<void> _requestBluetoothPermissions() async {
+    // 1. Ask for permissions
+    Map<Permission, PermissionStatus> statuses = await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.location, // Android requires location for BLE scanning
+    ].request();
+
+    // 2. Check if they were granted
+    if (statuses[Permission.bluetoothScan]!.isGranted &&
+        statuses[Permission.bluetoothConnect]!.isGranted) {
+      
+      // Success! Now show your search sheet
+      if (!mounted) return;
+      AddTagSheet.show(context, (newTag) async {
+        setState(() {
+          myTags.add(newTag); // Corrected from tags.add
+        });
+        // Persist to Shared Preferences
+        await StorageService.saveTags(myTags);
+      });
+    } else {
+      // Permissions denied
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Please enable Bluetooth permissions in Settings.")),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -49,7 +115,7 @@ class _HomeScreenState extends State<HomeScreen> {
       body: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 32.0),
@@ -59,55 +125,23 @@ class _HomeScreenState extends State<HomeScreen> {
                   fontSize: 24,
                   fontWeight: FontWeight.w600
                 ),
+                textAlign: TextAlign.center,
               ),
             ),
 
-            Expanded(
-              child: ListView.builder(
-                itemCount: tags.length,
-                itemBuilder: (context, index) {
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 8.0),
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(16.0),
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute<void>(builder: (context) => TagScreen()),
-                        );
-                      },
-                      child: Container(
-                        width: double.infinity,
-                        decoration: BoxDecoration(
-                          color: Colors.white, 
-                          borderRadius: BorderRadius.circular(16), 
-                        ),
-                        child: Padding(
-                          padding: const EdgeInsets.all(20.0),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                tags[index], 
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w500
-                                ),
-                              ),
-                              Row(
-                                children: [
-                                  Text("Connected"),
-                                  SizedBox(width: 4),
-                                  Icon(Icons.circle, color: Colors.greenAccent)
-                                ],
-                              )
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  );
-                },
+            myTags.isEmpty ? 
+            Text(
+              "No paired tags. Add a new tag.", 
+              style: TextStyle(
+                fontSize: 16,
+                color: Color(0xFF757575)
+              ),
+              textAlign: TextAlign.center
+            )
+            : Expanded(
+              child: TagList(
+                tags: myTags,
+                onRefresh: _initData, // Pass the refresh callback
               ),
             ),
           ],
@@ -115,7 +149,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
 
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {},
+        onPressed: _requestBluetoothPermissions,
         icon: Icon(Icons.add),
         label: Text("New Tag"),
         backgroundColor: Colors.teal, 

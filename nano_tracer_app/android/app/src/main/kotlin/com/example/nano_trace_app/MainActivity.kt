@@ -1,4 +1,4 @@
-package com.example.nano_tracer_app
+package com.example.nano_trace_app
 
 import io.flutter.embedding.android.FlutterActivity
 

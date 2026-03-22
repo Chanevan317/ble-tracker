@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:nano_tracer_app/screens/home_screen.dart';
+import 'package:nano_trace_app/screens/home_screen.dart';
+
 
 void main() {
   runApp(const MyApp());

@@ -1,4 +1,4 @@
-name: nano_tracer_app
+name: nano_trace_app
 description: "A new Flutter project."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
@@ -36,6 +36,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   shared_preferences: ^2.5.4
   flutter_blue_plus: ^2.2.1
+  permission_handler: ^11.3.0
 
 dev_dependencies:
   flutter_test:
