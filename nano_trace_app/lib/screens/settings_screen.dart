@@ -45,7 +45,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       child: Icon(
                         Icons.person,
                         size: 40.0,
-                        color: Color(0xFF5555555),
+                        color: Color(0xff5555555),
                       ),
                     ),
                     SizedBox(width: 16),

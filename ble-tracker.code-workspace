@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "nano_trace_hardware"
+		},
+		{
+			"path": "nano_trace_app"
+		}
+	],
+	"settings": {}
+}

@@ -18,6 +18,7 @@ class TagTile extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8.0),
       child: InkWell(
+        borderRadius: BorderRadius.circular(16.0),
         onTap: () {
           Navigator.push(
             context,

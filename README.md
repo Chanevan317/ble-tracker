@@ -1,1 +1,1 @@
-# BLE Tracker using Xiao ESP32C3
+# BLE Tracker using ESP32C3

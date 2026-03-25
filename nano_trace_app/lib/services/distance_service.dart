@@ -3,11 +3,11 @@ import 'dart:math';
 class KalmanDistanceFilter {
   // Process Noise (Q): How fast the actual distance can change.
   // Lower = smoother but laggier. Higher = faster response to movement.
-  double _q = 0.08; 
+  final double _q = 0.08; 
 
   // Measurement Noise (R): How much "jitter" is in your RSSI sensor.
   // BLE RSSI is noisy, so 5.0 - 10.0 is a good starting range.
-  double _r = 8.0; 
+  final double _r = 8.0; 
 
   double _x = 0.0; // Estimated state (Distance)
   double _p = 1.0; // Estimation error covariance
