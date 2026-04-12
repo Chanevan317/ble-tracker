@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:nano_trace_app/models/tracker_tag.dart';
-import 'package:nano_trace_app/services/ble_service.dart'; // Import your model
-
+import 'package:nano_trace_app/services/ble_service.dart';
+import 'package:nano_trace_app/services/storage_service.dart';
 
 class AddTagSheet {
   // Changed callback to pass the whole object
@@ -25,61 +25,93 @@ class AddTagSheet {
             return Padding(
               padding: EdgeInsets.only(
                 bottom: MediaQuery.of(context).viewInsets.bottom + 32,
-                left: 24, right: 24, top: 24,
+                left: 24,
+                right: 24,
+                top: 24,
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Container(
-                    width: 40, height: 4,
-                    decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)),
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[300],
+                      borderRadius: BorderRadius.circular(2),
+                    ),
                   ),
                   const SizedBox(height: 24),
-                  
+
                   Text(
-                    isPairing ? "Securing Connection..." : (isNamingStep ? "Name your Tag" : "Searching..."),
-                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                    isPairing
+                        ? "Securing Connection..."
+                        : (isNamingStep ? "Name your Tag" : "Searching..."),
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                   const SizedBox(height: 20),
 
                   if (isPairing) ...[
                     const CircularProgressIndicator(color: Colors.teal),
-                    const SizedBox(height: 20, width: double.infinity,),
+                    const SizedBox(height: 20, width: double.infinity),
                     const Text("Linking this NanoTracer to your phone..."),
                   ] else if (!isNamingStep) ...[
                     const LinearProgressIndicator(color: Colors.teal),
                     const SizedBox(height: 10),
                     ConstrainedBox(
                       constraints: const BoxConstraints(maxHeight: 300),
-                      child: StreamBuilder<List<ScanResult>>(
-                        stream: BleService.nanoTracerResults, // Using the service stream
-                        builder: (context, snapshot) {
-                          final results = snapshot.data ?? [];
+                      child: FutureBuilder<List<TrackerTag>>(
+                        future: StorageService.loadTags(),
+                        builder: (context, tagsSnapshot) {
+                          final pairedTags = tagsSnapshot.data ?? [];
+                          final pairedHardwareNames = pairedTags
+                              .map((t) => t.hardwareName)
+                              .toSet();
 
-                          if (results.isEmpty) {
-                            return const Center(
-                              child: Padding(
-                                padding: EdgeInsets.all(20.0),
-                                child: Text("Searching for NanoTracers..."),
-                              ),
-                            );
-                          }
+                          return StreamBuilder<List<ScanResult>>(
+                            stream: BleService.nanoTracerResults,
+                            builder: (context, snapshot) {
+                              final results = snapshot.data ?? [];
+                              // Filter out already-paired devices
+                              final availableDevices = results
+                                  .where(
+                                    (r) => !pairedHardwareNames.contains(
+                                      r.advertisementData.advName,
+                                    ),
+                                  )
+                                  .toList();
 
-                          return ListView.builder(
-                            shrinkWrap: true,
-                            itemCount: results.length,
-                            itemBuilder: (context, index) {
-                              final data = results[index];
-                              return ListTile(
-                                leading: const Icon(Icons.bluetooth_searching, color: Colors.teal),
-                                title: Text(data.advertisementData.advName),
-                                subtitle: Text(data.device.remoteId.str),
-                                onTap: () {
-                                  // STEP 1: Just capture the ID and move to Naming
-                                  setModalState(() {
-                                    discoveredId = data.device.remoteId.str;
-                                    isNamingStep = true;
-                                  });
+                              if (availableDevices.isEmpty) {
+                                return const Center(
+                                  child: Padding(
+                                    padding: EdgeInsets.all(20.0),
+                                    child: Text("Searching for NanoTracers..."),
+                                  ),
+                                );
+                              }
+
+                              return ListView.builder(
+                                shrinkWrap: true,
+                                itemCount: availableDevices.length,
+                                itemBuilder: (context, index) {
+                                  final data = availableDevices[index];
+                                  return ListTile(
+                                    leading: const Icon(
+                                      Icons.bluetooth_searching,
+                                      color: Colors.teal,
+                                    ),
+                                    title: Text(data.advertisementData.advName),
+                                    subtitle: Text(data.device.remoteId.str),
+                                    onTap: () {
+                                      // STEP 1: Just capture the ID and move to Naming
+                                      setModalState(() {
+                                        discoveredId = data.device.remoteId.str;
+                                        isNamingStep = true;
+                                      });
+                                    },
+                                  );
                                 },
                               );
                             },
@@ -93,7 +125,9 @@ class AddTagSheet {
                       autofocus: true,
                       decoration: InputDecoration(
                         labelText: "Tag Name",
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
                       ),
                     ),
                     const SizedBox(height: 24),
@@ -102,33 +136,58 @@ class AddTagSheet {
                       height: 55,
                       child: FilledButton(
                         onPressed: () async {
-                          if (nameController.text.isNotEmpty && discoveredId != null) {
+                          if (nameController.text.isNotEmpty &&
+                              discoveredId != null) {
                             // 1. Show the loading spinner
                             setModalState(() => isPairing = true);
 
-                            // 2. Run the actual Bluetooth Handshake
-                            // This returns "NanoTrace-01" or null
-                            String? hardwareName = await BleService.pairAndLock(discoveredId!);
-
-                            if (hardwareName != null) {
-                              // 3. Create the tag with the User's Nickname AND the Hardware Name
-                              final newTag = TrackerTag(
-                                id: DateTime.now().millisecondsSinceEpoch.toString(), // Unique Local ID
-                                tagName: nameController.text,                         // e.g. "Keys"
-                                hardwareName: hardwareName,                           // e.g. "NanoTrace-01"
-                                lastSeen: DateTime.now(),
-                              );
-
-                              // 4. Pass it back to your Dashboard (main.dart) to be saved
-                              onTagAdded(newTag); 
-                              
-                              if (context.mounted) Navigator.pop(context);
-                            } else {
-                              // 5. Handle Failure
+                            // 2. Load the stored user ID, which is required by the BLE handshake.
+                            final userId = await StorageService.getUserId();
+                            if (userId == null || userId.isEmpty) {
                               setModalState(() => isPairing = false);
                               if (context.mounted) {
                                 ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text("Failed to lock tag. Try again.")),
+                                  const SnackBar(
+                                    content: Text(
+                                      "Please save your User ID in Settings before pairing.",
+                                    ),
+                                  ),
+                                );
+                              }
+                              return;
+                            }
+
+                            // 3. Run the actual Bluetooth Handshake with the stored user ID.
+                            String? hardwareName = await BleService.pairAndLock(
+                              discoveredId!,
+                              userId,
+                            );
+
+                            if (hardwareName != null) {
+                              // 4. Create the tag with the User's Nickname AND the Hardware Name
+                              final newTag = TrackerTag(
+                                id: DateTime.now().millisecondsSinceEpoch
+                                    .toString(), // Unique Local ID
+                                tagName: nameController.text, // e.g. "Keys"
+                                hardwareName:
+                                    hardwareName, // e.g. "NanoTrace-01"
+                                lastSeen: DateTime.now(),
+                              );
+
+                              // 5. Pass it back to your Dashboard (main.dart) to be saved
+                              onTagAdded(newTag);
+
+                              if (context.mounted) Navigator.pop(context);
+                            } else {
+                              // 6. Handle Failure
+                              setModalState(() => isPairing = false);
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                      "Failed to lock tag. Try again.",
+                                    ),
+                                  ),
                                 );
                               }
                             }
@@ -136,7 +195,9 @@ class AddTagSheet {
                         },
                         style: FilledButton.styleFrom(
                           backgroundColor: Colors.teal,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
                         ),
                         child: const Text("Add to My Trackers"),
                       ),
@@ -149,7 +210,5 @@ class AddTagSheet {
         );
       },
     );
-
-    FlutterBluePlus.startScan(timeout: const Duration(seconds: 10));
   }
 }

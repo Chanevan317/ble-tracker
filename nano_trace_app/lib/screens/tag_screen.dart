@@ -1,13 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart' show ScanResult, FlutterBluePlus;
+import 'package:flutter_blue_plus/flutter_blue_plus.dart'
+    show ScanResult, FlutterBluePlus;
 import 'package:nano_trace_app/models/tracker_tag.dart';
 import 'package:nano_trace_app/screens/widgets/battery_level.dart';
 import 'package:nano_trace_app/screens/widgets/radar_view.dart';
 import 'package:nano_trace_app/screens/widgets/status_card.dart';
 import 'package:nano_trace_app/services/distance_service.dart';
 import 'package:nano_trace_app/services/storage_service.dart';
-
 
 class TagScreen extends StatefulWidget {
   final TrackerTag tag;
@@ -135,37 +135,43 @@ class _TagScreenState extends State<TagScreen>
                 stream: FlutterBluePlus.scanResults,
                 builder: (context, snapshot) {
                   final results = snapshot.data ?? [];
-                  
+
                   // Find our tag in the scan results
                   final myTag = results.cast<ScanResult?>().firstWhere(
-                    (r) => r?.advertisementData.advName == widget.tag.hardwareName,
+                    (r) =>
+                        r?.advertisementData.advName == widget.tag.hardwareName,
                     orElse: () => null,
                   );
-              
+
                   bool isConnected = false;
                   double? filteredDistance;
-              
+                  DistanceRange range = DistanceRange.unknown;
+
                   if (myTag != null) {
                     // 1. Check if the packet is fresh (less than 4s old)
-                    final age = DateTime.now().difference(myTag.timeStamp).inSeconds;
+                    final age = DateTime.now()
+                        .difference(myTag.timeStamp)
+                        .inSeconds;
                     if (age < 4) {
                       isConnected = true;
                       // Apply the Kalman Filter to the raw RSSI
                       filteredDistance = _kalmanFilter.filter(myTag.rssi);
+                      range = KalmanDistanceFilter.getRange(filteredDistance);
                     } else {
-                      _kalmanFilter.reset(); // Reset if signal is lost for too long
+                      _kalmanFilter
+                          .reset(); // Reset if signal is lost for too long
                     }
                   }
-              
+
                   return Column(
                     children: [
                       RadarView(
                         animation: _controller,
                         isConnected: isConnected,
-                        distanceInMeters: filteredDistance,
+                        distanceRange: range,
                       ),
                       SizedBox(height: 16),
-                      
+
                       Expanded(
                         child: Row(
                           children: [
@@ -175,13 +181,16 @@ class _TagScreenState extends State<TagScreen>
                                 decoration: BoxDecoration(
                                   color: Colors.white,
                                   borderRadius: BorderRadius.circular(16),
-                                  border: Border.all(color: Color(0xFFD5D5D5), width: 4),
+                                  border: Border.all(
+                                    color: Color(0xFFD5D5D5),
+                                    width: 4,
+                                  ),
                                 ),
                                 child: batteryLevel(0.65),
                               ),
                             ),
                             SizedBox(width: 16.0),
-              
+
                             Expanded(
                               flex: 6,
                               child: StatusCard(isConnected: isConnected),

@@ -1,33 +1,36 @@
 import 'package:flutter/material.dart';
+import 'package:nano_trace_app/services/distance_service.dart';
 import '../utils/radar_animation.dart';
 
 class RadarView extends StatelessWidget {
   final Animation<double> animation;
   final bool isConnected;
-  final double? distanceInMeters;
+  final DistanceRange distanceRange;
 
   const RadarView({
-    super.key, 
+    super.key,
     required this.animation,
     required this.isConnected,
-    this.distanceInMeters,
+    required this.distanceRange,
   });
 
-  // 1. Logic to calculate the dynamic color based on distance
+  // Logic to calculate the dynamic color based on distance range
   Color _getRadarColor() {
     if (!isConnected) return Colors.grey.shade400; // Grey if disconnected
-    if (distanceInMeters == null) return Colors.teal; // Teal if connecting/searching
 
-    // Clamp the distance to a maximum of 10 meters for the color scale
-    double normalized = (distanceInMeters! / 10.0).clamp(0.0, 1.0);
-
-    // Smoothly transition (Lerp) from Green (Close) -> Orange (Medium) -> Red (Far)
-    if (normalized < 0.5) {
-      // 0 to 5 meters
-      return Color.lerp(Colors.green, Colors.orange, normalized * 2) ?? Colors.green;
-    } else {
-      // 5 to 10 meters
-      return Color.lerp(Colors.orange, Colors.red, (normalized - 0.5) * 2) ?? Colors.red;
+    switch (distanceRange) {
+      case DistanceRange.veryClose:
+        return Colors.green; // Bright green
+      case DistanceRange.close:
+        return Colors.green.shade600; // Darker green
+      case DistanceRange.near:
+        return Colors.yellow.shade700; // Yellow-orange
+      case DistanceRange.far:
+        return Colors.orange; // Orange
+      case DistanceRange.veryFar:
+        return Colors.red; // Red
+      case DistanceRange.unknown:
+        return Colors.teal; // Teal if searching
     }
   }
 
@@ -38,14 +41,13 @@ class RadarView extends StatelessWidget {
     return AspectRatio(
       aspectRatio: 1.0,
       child: AnimatedContainer(
-        // 2. AnimatedContainer ensures the color shifts smoothly as you walk around
         duration: const Duration(milliseconds: 600),
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(16),
           gradient: RadialGradient(
             colors: [
-              radarColor.withValues(alpha: 0.5), // Inner gradient
-              radarColor.withValues(alpha: 0.9), // Outer gradient
+              radarColor.withValues(alpha: 0.5),
+              radarColor.withValues(alpha: 0.9),
             ],
             center: Alignment.center,
             radius: 0.8,
@@ -53,20 +55,16 @@ class RadarView extends StatelessWidget {
         ),
         child: Stack(
           children: [
-            // 3. Only draw the radar ripples if the tag is actually connected
-            if (isConnected)
+            if (isConnected && distanceRange != DistanceRange.unknown)
               Positioned.fill(
                 child: AnimatedBuilder(
                   animation: animation,
                   builder: (context, child) {
-                    return CustomPaint(
-                      painter: RadarPainter(animation.value),
-                    );
+                    return CustomPaint(painter: RadarPainter(animation.value));
                   },
                 ),
               ),
 
-            // 4. Center text logic
             Center(
               child: Padding(
                 padding: const EdgeInsets.all(16.0),
@@ -92,22 +90,22 @@ class RadarView extends StatelessWidget {
       );
     }
 
-    if (distanceInMeters == null) {
+    if (distanceRange == DistanceRange.unknown) {
       return const Text(
         "Searching...",
         style: TextStyle(
-          fontSize: 24,
+          fontSize: 28,
           fontWeight: FontWeight.w600,
           color: Colors.white,
         ),
       );
     }
 
-    // Display the estimated distance (e.g., "≈ 1.5 m")
+    // Display the distance range label
     return Text(
-      "≈ ${distanceInMeters!.toStringAsFixed(1)} m",
+      distanceRange.label,
       style: const TextStyle(
-        fontSize: 48,
+        fontSize: 32,
         fontWeight: FontWeight.bold,
         color: Colors.white,
       ),

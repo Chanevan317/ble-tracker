@@ -6,7 +6,7 @@ import 'package:nano_trace_app/services/storage_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:nano_trace_app/screens/utils/newtag_sheet.dart';
 import 'package:nano_trace_app/screens/settings_screen.dart';
-
+import 'package:nano_trace_app/screens/username_setup_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -22,6 +22,9 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _initData();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _ensureUserCredentials();
+    });
   }
 
   Future<void> _initData() async {
@@ -29,23 +32,23 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       myTags = loadedTags;
     });
+  }
 
-    // START THE SCAN HERE
-    // Using continuous scan so the list updates in real-time
-    try {
-      await FlutterBluePlus.startScan(
-        timeout: null, // null means scan until manually stopped
-        continuousUpdates: true,
-        androidUsesFineLocation: true,
+  Future<void> _ensureUserCredentials() async {
+    final savedUsername = await StorageService.getSavedUsername();
+    final savedUserId = await StorageService.getUserId();
+
+    if ((savedUsername == null || savedUsername.isEmpty) ||
+        (savedUserId == null || savedUserId.isEmpty)) {
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute(builder: (context) => const UsernameSetupScreen()),
       );
-    } catch (e) {
-      debugPrint("Scan Error: $e");
     }
   }
 
   @override
   void dispose() {
-    FlutterBluePlus.stopScan(); // Stop scanning when app/screen closes
     super.dispose();
   }
 
@@ -60,7 +63,6 @@ class _HomeScreenState extends State<HomeScreen> {
     // 2. Check if they were granted
     if (statuses[Permission.bluetoothScan]!.isGranted &&
         statuses[Permission.bluetoothConnect]!.isGranted) {
-      
       // Success! Now show your search sheet
       if (!mounted) return;
       AddTagSheet.show(context, (newTag) async {
@@ -73,7 +75,9 @@ class _HomeScreenState extends State<HomeScreen> {
     } else {
       // Permissions denied
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please enable Bluetooth permissions in Settings.")),
+        const SnackBar(
+          content: Text("Please enable Bluetooth permissions in Settings."),
+        ),
       );
     }
   }
@@ -87,10 +91,7 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: Text(
           "NanoTrace",
-          style: TextStyle(
-            fontSize: 24,
-            fontWeight: FontWeight.w400
-          ),
+          style: TextStyle(fontSize: 24, fontWeight: FontWeight.w400),
         ),
         actions: [
           Row(
@@ -99,10 +100,16 @@ class _HomeScreenState extends State<HomeScreen> {
                 onPressed: () {
                   Navigator.push(
                     context,
-                    MaterialPageRoute<void>(builder: (context) => SettingsScreen()),
+                    MaterialPageRoute<void>(
+                      builder: (context) => SettingsScreen(),
+                    ),
                   );
-                }, 
-                icon: Icon(Icons.settings, size: 28, color: Colors.teal.shade900,)
+                },
+                icon: Icon(
+                  Icons.settings,
+                  size: 28,
+                  color: Colors.teal.shade900,
+                ),
               ),
               SizedBox(width: 10),
             ],
@@ -121,29 +128,23 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: const EdgeInsets.symmetric(vertical: 32.0),
               child: Text(
                 "My Trackers",
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w600
-                ),
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600),
                 textAlign: TextAlign.center,
               ),
             ),
 
-            myTags.isEmpty ? 
-            Text(
-              "No paired tags. Add a new tag.", 
-              style: TextStyle(
-                fontSize: 16,
-                color: Color(0xFF757575)
-              ),
-              textAlign: TextAlign.center
-            )
-            : Expanded(
-              child: TagList(
-                tags: myTags,
-                onRefresh: _initData, // Pass the refresh callback
-              ),
-            ),
+            myTags.isEmpty
+                ? Text(
+                    "No paired tags. Add a new tag.",
+                    style: TextStyle(fontSize: 16, color: Color(0xFF757575)),
+                    textAlign: TextAlign.center,
+                  )
+                : Expanded(
+                    child: TagList(
+                      tags: myTags,
+                      onRefresh: _initData, // Pass the refresh callback
+                    ),
+                  ),
           ],
         ),
       ),
@@ -152,13 +153,14 @@ class _HomeScreenState extends State<HomeScreen> {
         onPressed: _requestBluetoothPermissions,
         icon: Icon(Icons.add),
         label: Text("New Tag"),
-        backgroundColor: Colors.teal, 
-        foregroundColor: Colors.white, 
+        backgroundColor: Colors.teal,
+        foregroundColor: Colors.white,
         elevation: 8.0, // Custom elevation/shadow
-        shape: RoundedRectangleBorder( // Custom shape
+        shape: RoundedRectangleBorder(
+          // Custom shape
           borderRadius: BorderRadius.circular(16.0),
         ),
-        extendedTextStyle: const TextStyle( 
+        extendedTextStyle: const TextStyle(
           fontSize: 16.0,
           fontWeight: FontWeight.w600,
           letterSpacing: 1.5,
