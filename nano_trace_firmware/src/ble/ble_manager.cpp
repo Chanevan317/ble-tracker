@@ -1,9 +1,11 @@
 #include "ble_manager.h"
 #include <NimBLEDevice.h>
 #include <Preferences.h>
+#include "buzzer/buzzer_manager.h"
 
 #define SERVICE_UUID   "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define LOCK_CHAR_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+#define BUZZER_CHAR_UUID "a1b2c3d4-1234-5678-abcd-ef0123456789"
 
 // ── Private state ─────────────────────────────────────────
 namespace {
@@ -11,6 +13,7 @@ namespace {
     bool _isPaired      = false;
     bool _isConnected   = false;
     bool _triggerReboot = false;
+    bool _triggerBuzzer = false;
     unsigned long _rebootAt = 0;
 
     class ServerCallbacks : public NimBLEServerCallbacks {
@@ -57,8 +60,19 @@ namespace {
         }
     };
 
+    class BuzzerCallbacks : public NimBLECharacteristicCallbacks {
+        void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+            std::string value = pCharacteristic->getValue();
+            if (value.length() > 0 && value[0] == 0x01) {
+                Serial.println("[BLE] Buzzer command received");
+                BuzzerManager::triggerAlert();
+            }
+        }
+    };
+
     static ServerCallbacks serverCallbacks;
     static LockCallbacks   lockCallbacks;
+    static BuzzerCallbacks buzzerCallbacks;
 }
 
 // ── Public functions ──────────────────────────────────────
@@ -94,19 +108,28 @@ namespace BLEManager {
 
         NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
 
-        if (!_isPaired) {
-            NimBLEService* pService = pServer->createService(SERVICE_UUID);
-            NimBLECharacteristic* pLockChar = pService->createCharacteristic(
+        // Always create service with lock + buzzer characteristics
+        NimBLEService* pService = pServer->createService(SERVICE_UUID);
+        
+        NimBLECharacteristic* pLockChar = pService->createCharacteristic(
             LOCK_CHAR_UUID,
             NIMBLE_PROPERTY::WRITE    |
             NIMBLE_PROPERTY::WRITE_NR |
             NIMBLE_PROPERTY::READ
-            );
-            pLockChar->setCallbacks(&lockCallbacks);
-            pService->start();
-            pAdvertising->addServiceUUID(SERVICE_UUID);
-        } else {
-            pAdvertising->addServiceUUID(SERVICE_UUID);
+        );
+        pLockChar->setCallbacks(&lockCallbacks);
+
+        NimBLECharacteristic* pBuzzerChar = pService->createCharacteristic(
+            BUZZER_CHAR_UUID,
+            NIMBLE_PROPERTY::WRITE |
+            NIMBLE_PROPERTY::WRITE_NR
+        );
+        pBuzzerChar->setCallbacks(&buzzerCallbacks);
+
+        pService->start();
+        pAdvertising->addServiceUUID(SERVICE_UUID);
+
+        if (_isPaired) {
             pAdvertising->setAdvertisingInterval(160);
             pAdvertising->setPreferredParams(0x06, 0x06);
         }

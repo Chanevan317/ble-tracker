@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart'
-    show ScanResult, FlutterBluePlus;
+    show ScanResult, FlutterBluePlus, BluetoothDevice;
+import 'package:nano_trace_app/services/ble_service.dart';
 import 'package:nano_trace_app/models/tracker_tag.dart';
 import 'package:nano_trace_app/screens/widgets/battery_level.dart';
 import 'package:nano_trace_app/screens/widgets/radar_view.dart';
@@ -23,6 +24,7 @@ class _TagScreenState extends State<TagScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _controller;
   final KalmanDistanceFilter _kalmanFilter = KalmanDistanceFilter();
+  BluetoothDevice? _connectedDevice;
 
   @override
   void initState() {
@@ -148,18 +150,27 @@ class _TagScreenState extends State<TagScreen>
                   DistanceRange range = DistanceRange.unknown;
 
                   if (myTag != null) {
-                    // 1. Check if the packet is fresh (less than 4s old)
-                    final age = DateTime.now()
-                        .difference(myTag.timeStamp)
-                        .inSeconds;
+                    final age = DateTime.now().difference(myTag.timeStamp).inSeconds;
                     if (age < 4) {
                       isConnected = true;
-                      // Apply the Kalman Filter to the raw RSSI
                       filteredDistance = _kalmanFilter.filter(myTag.rssi);
                       range = KalmanDistanceFilter.getRange(filteredDistance);
+
+                      // connect persistently when tag found
+                      SchedulerBinding.instance.addPostFrameCallback((_) {
+                        if (mounted) {
+                          BleService.connectToDevice(myTag.device);
+                          setState(() => _connectedDevice = myTag.device);
+                        }
+                      });
                     } else {
-                      _kalmanFilter
-                          .reset(); // Reset if signal is lost for too long
+                      _kalmanFilter.reset();
+                      SchedulerBinding.instance.addPostFrameCallback((_) {
+                        if (mounted) {
+                          BleService.disconnectDevice();
+                          setState(() => _connectedDevice = null);
+                        }
+                      });
                     }
                   }
 
@@ -207,7 +218,9 @@ class _TagScreenState extends State<TagScreen>
             SizedBox(height: 16),
 
             FilledButton(
-              onPressed: () {},
+              onPressed:  _connectedDevice == null
+                ? null // greyed out if not connected
+                : () => BleService.triggerBuzzer(_connectedDevice!),
               style: FilledButton.styleFrom(
                 backgroundColor: Colors.teal,
                 foregroundColor: Colors.white,
