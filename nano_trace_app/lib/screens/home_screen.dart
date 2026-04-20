@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:nano_trace_app/models/tracker_tag.dart';
 import 'package:nano_trace_app/screens/widgets/tag_list.dart';
 import 'package:nano_trace_app/services/storage_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:nano_trace_app/screens/utils/newtag_sheet.dart';
 import 'package:nano_trace_app/screens/settings_screen.dart';
-import 'package:nano_trace_app/screens/username_setup_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -21,8 +21,25 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _initData();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _ensureUserCredentials();
+    _startGlobalScan();
+  }
+
+  Future<void> _startGlobalScan() async {
+    // Listen for Bluetooth Adapter changes (On/Off)
+    FlutterBluePlus.adapterState.listen((state) async {
+      if (state == BluetoothAdapterState.on) {
+        final scanGranted = await Permission.bluetoothScan.isGranted;
+        final locGranted = await Permission.location.isGranted;
+
+        if (scanGranted && locGranted) {
+          await FlutterBluePlus.startScan(
+            continuousUpdates: true,
+            androidScanMode: AndroidScanMode.lowLatency,
+            timeout: null,
+          );
+          debugPrint("[BLE-APP] Global Scan Active");
+        }
+      }
     });
   }
 
@@ -33,62 +50,43 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  Future<void> _ensureUserCredentials() async {
-    final savedUsername = await StorageService.getSavedUsername();
-    final savedUserId = await StorageService.getUserId();
-
-    if ((savedUsername == null || savedUsername.isEmpty) ||
-        (savedUserId == null || savedUserId.isEmpty)) {
-      if (!mounted) return;
-      await Navigator.of(context).push(
-        MaterialPageRoute(builder: (context) => const UsernameSetupScreen()),
-      );
-    }
-  }
-
   @override
   void dispose() {
     super.dispose();
   }
 
   Future<void> _requestBluetoothPermissions() async {
-    // 1. Ask for permissions
+    // Check/Request permissions quickly
     Map<Permission, PermissionStatus> statuses = await [
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
-      Permission.location, // Android requires location for BLE scanning
+      Permission.location, 
     ].request();
 
-    // 2. Check if they were granted
-    if (statuses[Permission.bluetoothScan]!.isGranted &&
-        statuses[Permission.bluetoothConnect]!.isGranted) {
-      // Success! Now show your search sheet
+    if (statuses[Permission.bluetoothScan]!.isGranted) {
+      // Ensure scan is running if it wasn't
+      if (!FlutterBluePlus.isScanningNow) {
+        _startGlobalScan();
+      }
+      
       if (!mounted) return;
       AddTagSheet.show(context, (newTag) async {
         setState(() {
-          myTags.add(newTag); // Corrected from tags.add
+          myTags.add(newTag); 
         });
-        // Persist to Shared Preferences
         await StorageService.saveTags(myTags);
       });
-    } else {
-      // Permissions denied
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Please enable Bluetooth permissions in Settings."),
-        ),
-      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Color(0xFFF5F5F5),
+      backgroundColor: const Color(0xFFF5F5F5),
 
       // App bar with logo and action buttons
       appBar: AppBar(
-        title: Text(
+        title: const Text(
           "NanoTrace",
           style: TextStyle(fontSize: 24, fontWeight: FontWeight.w400),
         ),
@@ -100,7 +98,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   Navigator.push(
                     context,
                     MaterialPageRoute<void>(
-                      builder: (context) => SettingsScreen(),
+                      builder: (context) => const SettingsScreen(),
                     ),
                   );
                 },
@@ -110,12 +108,12 @@ class _HomeScreenState extends State<HomeScreen> {
                   color: Colors.teal.shade900,
                 ),
               ),
-              SizedBox(width: 10),
+              const SizedBox(width: 10),
             ],
           ),
         ],
         toolbarHeight: 80,
-        backgroundColor: Color(0xFFF5F5F5),
+        backgroundColor: const Color(0xFFF5F5F5),
       ),
 
       body: Padding(
@@ -123,8 +121,8 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 32.0),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 32.0),
               child: Text(
                 "My Trackers",
                 style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600),
@@ -133,30 +131,32 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
 
             myTags.isEmpty
-                ? Text(
-                    "No paired tags. Add a new tag.",
-                    style: TextStyle(fontSize: 16, color: Color(0xFF757575)),
-                    textAlign: TextAlign.center,
-                  )
-                : Expanded(
-                    child: TagList(
-                      tags: myTags,
-                      onRefresh: _initData, // Pass the refresh callback
-                    ),
-                  ),
+              ? const Center(child: Text("No paired tags. Add a new tag."))
+              : StreamBuilder<List<ScanResult>>(
+                  stream: FlutterBluePlus.scanResults,
+                  builder: (context, snapshot) {
+                    // Every time a new scan result comes in, this block can trigger 
+                    // if you want to re-sort or refresh the whole list view.
+                    return Expanded(
+                      child: TagList(
+                        tags: myTags,
+                        onRefresh: _initData, 
+                      ),
+                    );
+                  },
+                ),
           ],
         ),
       ),
 
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _requestBluetoothPermissions,
-        icon: Icon(Icons.add),
-        label: Text("New Tag"),
+        icon: const Icon(Icons.add),
+        label: const Text("New Tag"),
         backgroundColor: Colors.teal,
         foregroundColor: Colors.white,
-        elevation: 8.0, // Custom elevation/shadow
+        elevation: 8.0, 
         shape: RoundedRectangleBorder(
-          // Custom shape
           borderRadius: BorderRadius.circular(16.0),
         ),
         extendedTextStyle: const TextStyle(

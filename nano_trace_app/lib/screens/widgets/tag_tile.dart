@@ -1,3 +1,4 @@
+import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../../models/tracker_tag.dart';
@@ -44,34 +45,49 @@ class TagTile extends StatelessWidget {
                 ),
                 
                 StreamBuilder(
-                  stream: Stream.periodic(const Duration(seconds: 1)),
+                  // Tick every 2 seconds to force a UI refresh even if no new BLE packets arrive
+                  stream: Stream.periodic(const Duration(seconds: 2)),
                   builder: (context, snapshot) {
-                    // 1. Grab the global scan results
+                    bool isNearby = false;
+
+                    // 1. Get the sticky list of all seen devices
                     final results = FlutterBluePlus.lastScanResults;
                     
-                    // 2. Find the specific result for this tag
-                    final myTagResult = results.cast<ScanResult?>().firstWhere(
-                      (r) => r?.advertisementData.advName == tag.hardwareName,
-                      orElse: () => null,
-                    );
+                    // 2. Find THIS specific tag in the list
+                    final myTagResult = results.firstWhereOrNull((r) {
+                      bool macMatch = r.device.remoteId.str.toLowerCase() == tag.macAddress.toLowerCase();
+                      
+                      // Fallback check for the stealth manufacturer data signature
+                      final data = r.advertisementData.manufacturerData[65535];
+                      bool sigMatch = data != null && String.fromCharCodes(data) == tag.hardwareName;
+                      
+                      return macMatch || sigMatch;
+                    });
 
-                    // 3. Update 'lastSeen' ONLY if the packet is actually new (less than 2s old)
+                    // 3. Verify Freshness
                     if (myTagResult != null) {
                       final packetAge = DateTime.now().difference(myTagResult.timeStamp).inSeconds;
-                      if (packetAge < 2) {
-                        tag.lastSeen = DateTime.now();
+                      
+                      // If the packet is older than 10 seconds, it's a "ghost" from the buffer
+                      if (packetAge < 5) {
+                        isNearby = true;
+                        // Optionally update the tag's internal lastSeen for persistence
+                        tag.lastSeen = myTagResult.timeStamp;
                       }
                     }
 
-                    // 4. Determine connection status based on a 5-second timeout
-                    bool isConnected = DateTime.now().difference(tag.lastSeen).inSeconds < 5;
+                    // 4. Final fallback check against the persistent lastSeen timestamp
+                    // This helps if the scan results were cleared but we know we saw it recently
+                    if (!isNearby) {
+                      isNearby = DateTime.now().difference(tag.lastSeen).inSeconds < 5;
+                    }
 
                     return Row(
                       children: [
                         Text(
-                          isConnected ? "Connected" : "Disconnected",
+                          isNearby ? "Nearby" : "Out of Range",
                           style: TextStyle(
-                            color: isConnected ? Colors.green : Colors.grey,
+                            color: isNearby ? Colors.green : Colors.grey,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
@@ -79,7 +95,7 @@ class TagTile extends StatelessWidget {
                         Icon(
                           Icons.circle,
                           size: 12,
-                          color: isConnected ? Colors.greenAccent : Colors.grey[300],
+                          color: isNearby ? Colors.greenAccent : Colors.grey[300],
                         ),
                       ],
                     );

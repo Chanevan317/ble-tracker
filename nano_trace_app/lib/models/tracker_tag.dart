@@ -1,13 +1,15 @@
 class TrackerTag {
-  final String id;           // Unique ID for the local list
-  final String tagName;      // User's nickname (e.g., "Blue Backpack")
-  final String hardwareName; // The BLE name (e.g., "NanoTrace-01")
+  final String id;           
+  final String tagName;      
+  final String hardwareName; // This stores our 3-byte Stealth ID (e.g., "K\x94\xA2")
+  final String macAddress;   // The full RemoteId (e.g., "8C:FD:49:4B:94:A2")
   DateTime lastSeen;
 
   TrackerTag({
     required this.id,
     required this.tagName,
     required this.hardwareName,
+    required this.macAddress,
     required this.lastSeen,
   });
 
@@ -15,6 +17,7 @@ class TrackerTag {
     'id': id,
     'tagName': tagName,
     'hardwareName': hardwareName,
+    'macAddress': macAddress,
     'lastSeen': lastSeen.toIso8601String(),
   };
 
@@ -22,6 +25,7 @@ class TrackerTag {
     id: json['id'],
     tagName: json['tagName'],
     hardwareName: json['hardwareName'],
+    macAddress: json['macAddress'] ?? '', // Fallback for old saved tags
     lastSeen: DateTime.parse(json['lastSeen']),
   );
 }

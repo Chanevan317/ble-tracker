@@ -40,7 +40,7 @@ class StatusCard extends StatelessWidget {
           ),
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 16.0),
-            child: Text(isConnected ? "Connected" : "Disconnected", style: const TextStyle(fontSize: 14)),
+            child: Text(isConnected ? "Nearby" : "Out of Range", style: const TextStyle(fontSize: 14)),
           ),
         ],
       ),

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:nano_trace_app/models/tracker_tag.dart';
@@ -5,11 +6,10 @@ import 'package:nano_trace_app/services/ble_service.dart';
 import 'package:nano_trace_app/services/storage_service.dart';
 
 class AddTagSheet {
-  // Changed callback to pass the whole object
   static void show(BuildContext context, Function(TrackerTag) onTagAdded) {
     bool isNamingStep = false;
-    bool isPairing = false; // New loading state
-    String? discoveredId; // To store the UUID during the transition
+    bool isPairing = false;
+    String? discoveredId;
     final TextEditingController nameController = TextEditingController();
 
     showModalBottomSheet(
@@ -25,16 +25,13 @@ class AddTagSheet {
             return Padding(
               padding: EdgeInsets.only(
                 bottom: MediaQuery.of(context).viewInsets.bottom + 32,
-                left: 24,
-                right: 24,
-                top: 24,
+                left: 24, right: 24, top: 24,
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Container(
-                    width: 40,
-                    height: 4,
+                    width: 40, height: 4,
                     decoration: BoxDecoration(
                       color: Colors.grey[300],
                       borderRadius: BorderRadius.circular(2),
@@ -46,10 +43,7 @@ class AddTagSheet {
                     isPairing
                         ? "Securing Connection..."
                         : (isNamingStep ? "Name your Tag" : "Searching..."),
-                    style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                    ),
+                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 20),
 
@@ -66,28 +60,22 @@ class AddTagSheet {
                         future: StorageService.loadTags(),
                         builder: (context, tagsSnapshot) {
                           final pairedTags = tagsSnapshot.data ?? [];
-                          final pairedHardwareNames = pairedTags
-                              .map((t) => t.hardwareName)
-                              .toSet();
+                          final pairedHardwareNames = pairedTags.map((t) => t.hardwareName).toSet();
 
                           return StreamBuilder<List<ScanResult>>(
-                            stream: BleService.nanoTracerResults,
+                            stream: BleService.nanoTracerResults(pairedTags.map((t) => t.macAddress).toList()),
                             builder: (context, snapshot) {
                               final results = snapshot.data ?? [];
-                              // Filter out already-paired devices
-                              final availableDevices = results
-                                  .where(
-                                    (r) => !pairedHardwareNames.contains(
-                                      r.advertisementData.advName,
-                                    ),
-                                  )
-                                  .toList();
+                              final availableDevices = results.where((r) {
+                                // Exclude already paired MACs
+                                return !pairedHardwareNames.contains(r.device.remoteId.str);
+                              }).toList();
 
                               if (availableDevices.isEmpty) {
                                 return const Center(
                                   child: Padding(
                                     padding: EdgeInsets.all(20.0),
-                                    child: Text("Searching for NanoTracers..."),
+                                    child: Text("Searching for new NanoTracers..."),
                                   ),
                                 );
                               }
@@ -98,14 +86,10 @@ class AddTagSheet {
                                 itemBuilder: (context, index) {
                                   final data = availableDevices[index];
                                   return ListTile(
-                                    leading: const Icon(
-                                      Icons.bluetooth_searching,
-                                      color: Colors.teal,
-                                    ),
-                                    title: Text(data.advertisementData.advName),
+                                    leading: const Icon(Icons.bluetooth_searching, color: Colors.teal),
+                                    title: const Text("New NanoTracer"),
                                     subtitle: Text(data.device.remoteId.str),
                                     onTap: () {
-                                      // STEP 1: Just capture the ID and move to Naming
                                       setModalState(() {
                                         discoveredId = data.device.remoteId.str;
                                         isNamingStep = true;
@@ -124,10 +108,8 @@ class AddTagSheet {
                       controller: nameController,
                       autofocus: true,
                       decoration: InputDecoration(
-                        labelText: "Tag Name",
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(16),
-                        ),
+                        labelText: "Tag Name (e.g. My Keys)",
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
                       ),
                     ),
                     const SizedBox(height: 24),
@@ -136,58 +118,29 @@ class AddTagSheet {
                       height: 55,
                       child: FilledButton(
                         onPressed: () async {
-                          if (nameController.text.isNotEmpty &&
-                              discoveredId != null) {
-                            // 1. Show the loading spinner
+                          if (nameController.text.isNotEmpty && discoveredId != null) {
                             setModalState(() => isPairing = true);
 
-                            // 2. Load the stored user ID, which is required by the BLE handshake.
-                            final userId = await StorageService.getUserId();
-                            if (userId == null || userId.isEmpty) {
-                              setModalState(() => isPairing = false);
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      "Please save your User ID in Settings before pairing.",
-                                    ),
-                                  ),
-                                );
-                              }
-                              return;
-                            }
-
-                            // 3. Run the actual Bluetooth Handshake with the stored user ID.
-                            String? hardwareName = await BleService.pairAndLock(
-                              discoveredId!,
-                              userId,
-                            );
+                            // Pair & get the 3-byte stealth MAC
+                            String? hardwareName = await BleService.pairAndBond(discoveredId!);
 
                             if (hardwareName != null) {
-                              // 4. Create the tag with the User's Nickname AND the Hardware Name
                               final newTag = TrackerTag(
-                                id: DateTime.now().millisecondsSinceEpoch
-                                    .toString(), // Unique Local ID
-                                tagName: nameController.text, // e.g. "Keys"
-                                hardwareName:
-                                    hardwareName, // e.g. "NanoTrace-01"
+                                id: DateTime.now().millisecondsSinceEpoch.toString(),
+                                tagName: nameController.text,
+                                hardwareName: hardwareName, // The 3-byte stealth code
+                                macAddress: discoveredId!,  // The full 8C:FD... address
                                 lastSeen: DateTime.now(),
                               );
 
-                              // 5. Pass it back to your Dashboard (main.dart) to be saved
                               onTagAdded(newTag);
-
                               if (context.mounted) Navigator.pop(context);
+
                             } else {
-                              // 6. Handle Failure
                               setModalState(() => isPairing = false);
                               if (context.mounted) {
                                 ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text(
-                                      "Failed to lock tag. Try again.",
-                                    ),
-                                  ),
+                                  const SnackBar(content: Text("Failed to lock tag. Try again.")),
                                 );
                               }
                             }
@@ -195,9 +148,7 @@ class AddTagSheet {
                         },
                         style: FilledButton.styleFrom(
                           backgroundColor: Colors.teal,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(16),
-                          ),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                         ),
                         child: const Text("Add to My Trackers"),
                       ),

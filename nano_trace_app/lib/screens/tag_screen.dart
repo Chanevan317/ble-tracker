@@ -1,7 +1,8 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart'
-    show ScanResult, FlutterBluePlus, BluetoothDevice;
+import 'dart:async';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:collection/collection.dart';
 import 'package:nano_trace_app/services/ble_service.dart';
 import 'package:nano_trace_app/models/tracker_tag.dart';
 import 'package:nano_trace_app/screens/widgets/battery_level.dart';
@@ -20,28 +21,109 @@ class TagScreen extends StatefulWidget {
   State<TagScreen> createState() => _TagScreenState();
 }
 
-class _TagScreenState extends State<TagScreen>
-    with SingleTickerProviderStateMixin {
+class _TagScreenState extends State<TagScreen> with SingleTickerProviderStateMixin {
   late AnimationController _controller;
   final KalmanDistanceFilter _kalmanFilter = KalmanDistanceFilter();
-  BluetoothDevice? _connectedDevice;
+  BluetoothDevice? _nearbyDevice;
+
+  StreamSubscription<List<ScanResult>>? _scanSub;
+  bool _tagNearby = false;
+  DistanceRange _range = DistanceRange.unknown;
+  Timer? _lostTimer;
+  Timer? _systemDeviceTimer;
 
   @override
   void initState() {
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 3), // Speed of the ripples
-    );
-    SchedulerBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        _controller.repeat();
+      duration: const Duration(seconds: 3),
+    )..repeat();
+    _startMonitoring();
+  }
+
+  void _startMonitoring() {
+    // 1. Check System Devices periodically for bonded tags
+    _systemDeviceTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
+      List<BluetoothDevice> bonded = await FlutterBluePlus.systemDevices([]);
+      final foundBonded = bonded.firstWhereOrNull(
+        (d) => d.remoteId.str.toLowerCase() == widget.tag.macAddress.toLowerCase()
+      );
+      
+      if (foundBonded != null && !_tagNearby) {
+        _onTagFoundManual(foundBonded); 
       }
+    });
+
+    // 2. Listen to active scan results
+    _scanSub = FlutterBluePlus.scanResults.listen((results) {
+      final ScanResult? myTag = results.firstWhereOrNull((r) {
+        // A: Check MAC Address directly
+        if (r.device.remoteId.str.toLowerCase() == widget.tag.macAddress.toLowerCase()) {
+          return true;
+        }
+
+        // B: Check Stealth Signature in Manufacturer Data
+        final data = r.advertisementData.manufacturerData[65535];
+        if (data != null) {
+          final currentSig = String.fromCharCodes(data);
+          return currentSig == widget.tag.hardwareName;
+        }
+        return false;
+      });
+
+      if (myTag != null) {
+        _handleScanResultFound(myTag);
+      }
+    });
+  }
+
+  void _handleScanResultFound(ScanResult result) {
+    _lostTimer?.cancel();
+    _lostTimer = Timer(const Duration(seconds: 5), _onTagLost);
+
+    if (DateTime.now().difference(result.timeStamp).inSeconds < 2) {
+      if (!_tagNearby) {
+        setState(() {
+          _tagNearby = true;
+          _nearbyDevice = result.device;
+        });
+        BleService.setNearbyDevice(result.device);
+      }
+      
+      final filtered = _kalmanFilter.filter(result.rssi);
+      if (mounted) {
+        setState(() => _range = KalmanDistanceFilter.getRange(filtered));
+      }
+    }
+  }
+
+  void _onTagFoundManual(BluetoothDevice device) {
+    if (!mounted) return;
+    setState(() {
+      _tagNearby = true;
+      _nearbyDevice = device;
+      // We don't have RSSI here, so range stays as is until a scan packet updates it
+    });
+    BleService.setNearbyDevice(device);
+  }
+
+  void _onTagLost() {
+    if (!mounted) return;
+    _kalmanFilter.reset();
+    BleService.setNearbyDevice(null);
+    setState(() {
+      _tagNearby = false;
+      _nearbyDevice = null;
+      _range = DistanceRange.unknown;
     });
   }
 
   @override
   void dispose() {
+    _lostTimer?.cancel();
+    _systemDeviceTimer?.cancel();
+    _scanSub?.cancel();
     _controller.dispose();
     super.dispose();
   }
@@ -60,17 +142,13 @@ class _TagScreenState extends State<TagScreen>
             ),
             TextButton(
               onPressed: () async {
-                // 1. Get current list
                 List<TrackerTag> currentTags = await StorageService.loadTags();
-                // 2. Remove this specific tag
                 currentTags.removeWhere((t) => t.id == widget.tag.id);
-                // 3. Save back to storage
                 await StorageService.saveTags(currentTags);
-
                 if (context.mounted) {
-                  widget.onUnpair(); // Refresh Home Screen list
+                  widget.onUnpair();
                   Navigator.pop(context); // Close dialog
-                  Navigator.pop(context); // Go back home
+                  Navigator.pop(context); // Close TagScreen
                 }
               },
               child: const Text("Unpair", style: TextStyle(color: Colors.red)),
@@ -84,157 +162,95 @@ class _TagScreenState extends State<TagScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Color(0xFFF5F5F5),
-
+      backgroundColor: const Color(0xFFF5F5F5),
       appBar: AppBar(
         title: Text(
           widget.tag.tagName,
-          style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600),
+          style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w600),
         ),
         actions: [
           PopupMenuButton<String>(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             color: Colors.white,
             elevation: 4,
             icon: Icon(Icons.more_vert, color: Colors.teal.shade900),
-
             onSelected: (value) {
-              if (value == 'unpair') {
-                _showUnpairConfirmation(context);
-              }
+              if (value == 'unpair') _showUnpairConfirmation(context);
             },
-            itemBuilder: (BuildContext context) {
-              return [
-                const PopupMenuItem(
-                  value: 'unpair',
-                  child: Text(
-                    'Unpair Tag',
-                    style: TextStyle(fontSize: 16, color: Colors.red),
-                  ),
-                ),
-              ];
-            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'unpair',
+                child: Text('Unpair Tag', style: TextStyle(fontSize: 16, color: Colors.red)),
+              ),
+            ],
           ),
         ],
         toolbarHeight: 80,
-        backgroundColor: Color(0xFFF5F5F5),
+        backgroundColor: const Color(0xFFF5F5F5),
       ),
-
       body: Padding(
-        padding: const EdgeInsets.only(
-          left: 16.0,
-          right: 16.0,
-          top: 16.0,
-          bottom: 32.0,
-        ),
+        padding: const EdgeInsets.only(left: 16, right: 16, top: 16, bottom: 32),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Expanded(
-              child: StreamBuilder<List<ScanResult>>(
-                stream: FlutterBluePlus.scanResults,
-                builder: (context, snapshot) {
-                  final results = snapshot.data ?? [];
-
-                  // Find our tag in the scan results
-                  final myTag = results.cast<ScanResult?>().firstWhere(
-                    (r) =>
-                        r?.advertisementData.advName == widget.tag.hardwareName,
-                    orElse: () => null,
-                  );
-
-                  bool isConnected = false;
-                  double? filteredDistance;
-                  DistanceRange range = DistanceRange.unknown;
-
-                  if (myTag != null) {
-                    final age = DateTime.now().difference(myTag.timeStamp).inSeconds;
-                    if (age < 4) {
-                      isConnected = true;
-                      filteredDistance = _kalmanFilter.filter(myTag.rssi);
-                      range = KalmanDistanceFilter.getRange(filteredDistance);
-
-                      // connect persistently when tag found
-                      SchedulerBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) {
-                          BleService.connectToDevice(myTag.device);
-                          setState(() => _connectedDevice = myTag.device);
-                        }
-                      });
-                    } else {
-                      _kalmanFilter.reset();
-                      SchedulerBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) {
-                          BleService.disconnectDevice();
-                          setState(() => _connectedDevice = null);
-                        }
-                      });
-                    }
-                  }
-
-                  return Column(
-                    children: [
-                      RadarView(
-                        animation: _controller,
-                        isConnected: isConnected,
-                        distanceRange: range,
-                      ),
-                      SizedBox(height: 16),
-
-                      Expanded(
-                        child: Row(
-                          children: [
-                            Expanded(
-                              flex: 4,
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(16),
-                                  border: Border.all(
-                                    color: Color(0xFFD5D5D5),
-                                    width: 4,
-                                  ),
-                                ),
-                                child: batteryLevel(0.65),
-                              ),
+              child: Column(
+                children: [
+                  RadarView(
+                    animation: _controller,
+                    isConnected: _tagNearby,
+                    distanceRange: _range,
+                  ),
+                  const SizedBox(height: 16),
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Expanded(
+                          flex: 4,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: const Color(0xFFD5D5D5), width: 4),
                             ),
-                            SizedBox(width: 16.0),
-
-                            Expanded(
-                              flex: 6,
-                              child: StatusCard(isConnected: isConnected),
-                            ),
-                          ],
+                            child: batteryLevel(0.65), // You can make this dynamic later
+                          ),
                         ),
-                      ),
-                    ],
-                  );
-                },
+                        const SizedBox(width: 16),
+                        Expanded(
+                          flex: 6,
+                          child: StatusCard(isConnected: _tagNearby),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
             ),
-
-            SizedBox(height: 16),
-
+            const SizedBox(height: 16),
             FilledButton(
-              onPressed:  _connectedDevice == null
-                ? null // greyed out if not connected
-                : () => BleService.triggerBuzzer(_connectedDevice!),
+              onPressed: BleService.isBusy
+                  ? null
+                  : () async {
+                      // Create the device object directly from the saved MAC address
+                      BluetoothDevice targetDevice = BluetoothDevice.fromId(widget.tag.macAddress);
+                      
+                      final success = await BleService.triggerBuzzer(targetDevice);
+                      
+                      if (!success && mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Could not reach tag')),
+                        );
+                      }
+                    },
               style: FilledButton.styleFrom(
                 backgroundColor: Colors.teal,
                 foregroundColor: Colors.white,
-                textStyle: const TextStyle(
-                  fontSize: 24.0,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 1.5,
-                ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                ),
+                textStyle: const TextStyle(fontSize: 24, fontWeight: FontWeight.w600, letterSpacing: 1.5),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                 padding: const EdgeInsets.symmetric(vertical: 16),
               ),
-              child: Text('Bip the tag'),
+              child: const Text('Bip the tag'),
             ),
           ],
         ),

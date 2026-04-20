@@ -4,4 +4,5 @@ namespace BuzzerManager {
     void init();
     void update();
     void triggerAlert();
+    bool isActive();
 }

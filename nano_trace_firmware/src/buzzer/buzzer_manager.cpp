@@ -14,7 +14,7 @@ namespace {
 
 namespace BuzzerManager {
     void init() {
-        buzzer.stop();
+        pinMode(BUZZER_PIN, OUTPUT); 
         Serial.println("[BUZZER] Initialized");
     }
 
@@ -46,4 +46,6 @@ namespace BuzzerManager {
         _lastBeepTime = 0; // force immediate first beep
         Serial.println("[BUZZER] Alert triggered");
     }
+
+    bool isActive() { return _alertActive; }
 }

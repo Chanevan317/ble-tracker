@@ -80,7 +80,7 @@ class RadarView extends StatelessWidget {
   Widget _buildCenterText() {
     if (!isConnected) {
       return const Text(
-        "The tag is disconnected.\nNo data",
+        "The tag is out of range.\nNo data",
         textAlign: TextAlign.center,
         style: TextStyle(
           fontSize: 20,
