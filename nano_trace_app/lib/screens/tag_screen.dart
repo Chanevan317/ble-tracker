@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -128,37 +127,6 @@ class _TagScreenState extends State<TagScreen> with SingleTickerProviderStateMix
     super.dispose();
   }
 
-  void _showUnpairConfirmation(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text("Unpair Tag?"),
-          content: Text("Remove ${widget.tag.tagName} from your trackers?"),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("Cancel"),
-            ),
-            TextButton(
-              onPressed: () async {
-                List<TrackerTag> currentTags = await StorageService.loadTags();
-                currentTags.removeWhere((t) => t.id == widget.tag.id);
-                await StorageService.saveTags(currentTags);
-                if (context.mounted) {
-                  widget.onUnpair();
-                  Navigator.pop(context); // Close dialog
-                  Navigator.pop(context); // Close TagScreen
-                }
-              },
-              child: const Text("Unpair", style: TextStyle(color: Colors.red)),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -168,23 +136,6 @@ class _TagScreenState extends State<TagScreen> with SingleTickerProviderStateMix
           widget.tag.tagName,
           style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w600),
         ),
-        actions: [
-          PopupMenuButton<String>(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            color: Colors.white,
-            elevation: 4,
-            icon: Icon(Icons.more_vert, color: Colors.teal.shade900),
-            onSelected: (value) {
-              if (value == 'unpair') _showUnpairConfirmation(context);
-            },
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: 'unpair',
-                child: Text('Unpair Tag', style: TextStyle(fontSize: 16, color: Colors.red)),
-              ),
-            ],
-          ),
-        ],
         toolbarHeight: 80,
         backgroundColor: const Color(0xFFF5F5F5),
       ),

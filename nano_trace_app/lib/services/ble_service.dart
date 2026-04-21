@@ -1,7 +1,6 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 
+import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
@@ -44,85 +43,66 @@ class BleService {
     _isBusy = true;
 
     try {
-      debugPrint("[BLE] Stopping scan for command...");
+      // 1. Pause scan - Essential on Android to free up the radio
       await FlutterBluePlus.stopScan();
       
-      // Give the radio a moment to settle
+      // 2. Fast Connect
+      // Since no encryption is needed, a 2-3s timeout is plenty
+      await device.connect(license: License.free, timeout: const Duration(seconds: 3), autoConnect: false);
+
+      // 3. Short breather for Service Discovery
+      // We still need a tiny delay so the GATT table is ready
       await Future.delayed(const Duration(milliseconds: 300));
-
-      debugPrint("[BLE] Connecting to ${device.remoteId}...");
-      await device.connect(license: License.free, timeout: const Duration(seconds: 5), autoConnect: false);
-
-      // CRITICAL: Android needs a delay after connection before discovering services
-      if (Platform.isAndroid) {
-        await device.clearGattCache(); 
-        await Future.delayed(const Duration(milliseconds: 600)); 
-      }
-
-      debugPrint("[BLE] Discovering Services...");
       List<BluetoothService> services = await device.discoverServices();
       
       BluetoothCharacteristic? buzzerChar;
-
-      // Search for the characteristic across all services
-      for (var service in services) {
-        // Normalize UUIDs to lowercase to avoid "A1B2..." != "a1b2..."
-        if (service.uuid.str128.toLowerCase() == serviceUuid.toLowerCase()) {
-          for (var char in service.characteristics) {
-            if (char.uuid.str128.toLowerCase() == buzzerCharUuid.toLowerCase()) {
-              buzzerChar = char;
-              break;
-            }
-          }
+      for (var s in services) {
+        if (s.uuid.str128.toLowerCase() == serviceUuid.toLowerCase()) {
+          buzzerChar = s.characteristics.firstWhereOrNull(
+            (c) => c.uuid.str128.toLowerCase() == buzzerCharUuid.toLowerCase()
+          );
         }
       }
 
       if (buzzerChar != null) {
-        debugPrint("[BLE] Characteristic found. Sending 0x01...");
-        
-        // withoutResponse: false ensures the app waits for an ACK from the ESP32
-        await buzzerChar.write([0x01], withoutResponse: false);
-        
-        debugPrint("[BLE] Command ACK received ✓");
-        
-        // Keep connection alive for a split second so ESP32 processes the buzz
-        await Future.delayed(const Duration(milliseconds: 500));
+        // 4. Fire the command
+        // 'withoutResponse: false' is good here to ensure the ESP32 actually got it
+        await buzzerChar.write([0x01], timeout: 2);
+        debugPrint("[BLE] Bip sent successfully ✓");
         return true;
-      } else {
-        debugPrint("[BLE] ERROR: Buzzer characteristic not found in services.");
-        return false;
       }
+      return false;
 
     } catch (e) {
-      debugPrint("[BLE] Buzzer Exception: $e");
+      debugPrint("[BLE] Bip failed: $e");
       return false;
     } finally {
+      // 5. Clean up & Resume Scan immediately
       await device.disconnect();
-      debugPrint("[BLE] Disconnected. Restarting scan...");
-      
-      // Resume global scan
-      FlutterBluePlus.startScan(
-        continuousUpdates: true,
-        androidScanMode: AndroidScanMode.lowLatency,
-        timeout: null,
-      ).catchError((e) => debugPrint("Scan restart failed: $e"));
-
       _isBusy = false;
+      
+      // Fire the scan restart without 'awaiting' to keep the UI snappy
+      FlutterBluePlus.startScan(
+        continuousUpdates: true, 
+        androidScanMode: AndroidScanMode.lowLatency
+      );
     }
   }
 
-  // ── Pairing (NO USER ID NEEDED) ───────────────────────
+  // ── Pairing ───────────────────────
   static Future<String?> pairAndBond(String remoteId) async {
     BluetoothDevice device = BluetoothDevice.fromId(remoteId);
     try {
+      await FlutterBluePlus.stopScan(); // Pause scanning during connection
+      
       await device.connect(
-        license: License.free,
-        timeout: const Duration(seconds: 10)
+        license: License.free, 
+        timeout: const Duration(seconds: 10),
+        autoConnect: false
       );
       
-      await device.createBond(); 
-      debugPrint("[BLE] Bonded successfully");
-      await Future.delayed(const Duration(milliseconds: 1000)); 
+      // REMOVED: await device.createBond(); <-- This was causing the Cache Trap!
+      await Future.delayed(const Duration(milliseconds: 500)); 
 
       final services = await device.discoverServices();
       for (var service in services) {
@@ -130,22 +110,24 @@ class BleService {
           for (var char in service.characteristics) {
             if (char.uuid.str128.toLowerCase() == lockCharacteristicUuid.toLowerCase()) {
               
-              // Just send 0x01 to lock the hardware. No User ID string needed.
+              // 1. Send 0x01 to lock the hardware.
               await char.write([0x01]);
-              await Future.delayed(const Duration(seconds: 1)); 
-
+              
+              // 2. Give the ESP32 half a second to process and trigger its reboot
+              await Future.delayed(const Duration(milliseconds: 500)); 
               await device.disconnect(); 
               
+              // 3. CRUCIAL DELAY: Wait for the ESP32 to finish rebooting into Stealth Mode!
+              debugPrint("[BLE] Waiting for ESP32 to reboot...");
+              await Future.delayed(const Duration(milliseconds: 2500));
+              
+              // 4. Now start scanning fresh
               FlutterBluePlus.startScan(
-                withServices: [], 
                 continuousUpdates: true,
                 androidScanMode: AndroidScanMode.lowLatency,
-                timeout: const Duration(seconds: 0),
               ).catchError((e) => debugPrint("[BLE] Scan restart error: $e"));
 
               // --- GENERATE THE STEALTH IDENTITY ---
-              // On Android, remoteId is the MAC address (e.g., "8C:FD:49:4B:94:A2")
-              // We grab the last 3 bytes to match the firmware's stealth logic.
               List<String> macParts = remoteId.split(':');
               if (macParts.length == 6) {
                 int b3 = int.parse(macParts[3], radix: 16);
@@ -161,28 +143,60 @@ class BleService {
       }
       return null;
     } catch (e) {
-      debugPrint("[BLE] Bonding failed: $e");
+      debugPrint("[BLE] Pairing failed: $e");
       return null;
     }
   }
 
-  // ── Internal helpers ──────────────────────────────────
-  static Future<bool> _waitForAdvertisement(BluetoothDevice device) async {
-    // ... (Keep this exactly as you had it) ...
-    final completer = Completer<bool>();
-    final timeout = Timer(const Duration(milliseconds: 4000), () {
-      if (!completer.isCompleted) completer.complete(false);
-    });
-    final sub = FlutterBluePlus.scanResults.listen((results) {
-      final found = results.any(
-        (r) => r.device.remoteId == device.remoteId &&
-            DateTime.now().difference(r.timeStamp).inMilliseconds < 500,
+  // ── Unpairing ───────────────────────
+  static Future<bool> factoryResetTag(BluetoothDevice device) async {
+    if (_isBusy) return false;
+    _isBusy = true;
+
+    try {
+      await FlutterBluePlus.stopScan();
+      await device.connect(
+        license: License.free, 
+        timeout: const Duration(seconds: 5), 
+        autoConnect: false
       );
-      if (found && !completer.isCompleted) completer.complete(true);
-    });
-    final result = await completer.future;
-    await sub.cancel();
-    timeout.cancel();
-    return result;
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      final services = await device.discoverServices();
+      for (var s in services) {
+        if (s.uuid.toString().toLowerCase() == serviceUuid.toLowerCase()) {
+          final char = s.characteristics.firstWhereOrNull(
+            (c) => c.uuid.toString().toLowerCase() == lockCharacteristicUuid.toLowerCase()
+          );
+          if (char != null) {
+            
+            // 1. Send Reset Command
+            await char.write([0x00]); 
+            debugPrint("[BLE] Hardware Reset Command Sent");
+            
+            // 2. Wait for ESP to trigger reboot
+            await Future.delayed(const Duration(milliseconds: 500));
+            await device.disconnect();
+            
+            // 3. CRUCIAL DELAY: Wait for ESP32 to finish rebooting to Visible Mode
+            debugPrint("[BLE] Waiting for ESP32 to reboot into Visible mode...");
+            await Future.delayed(const Duration(milliseconds: 2500));
+            
+            return true;
+          }
+        }
+      }
+      return false;
+    } catch (e) {
+      debugPrint("[BLE] Reset failed: $e");
+      return false;
+    } finally {
+      // Ensure we clean up even if it fails
+      if (device.isConnected) {
+        await device.disconnect();
+      }
+      _isBusy = false;
+      FlutterBluePlus.startScan(continuousUpdates: true, androidScanMode: AndroidScanMode.lowLatency);
+    }
   }
 }

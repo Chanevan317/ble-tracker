@@ -17,25 +17,31 @@ namespace {
     unsigned long _rebootStartTime = 0;
     unsigned long _disconnectedAt = 0;
     uint8_t _btMac[6]; // Hardware-locked BT MAC
+    esp_pm_lock_handle_t powerLock = nullptr;
 
     class ServerCallbacks : public NimBLEServerCallbacks {
-        void onAuthenticationComplete(NimBLEConnInfo& connInfo) override {
-            if (connInfo.isEncrypted()) {
-                Serial.println("[BLE] Auth Success: Link Encrypted ✓");
-            }
-        }
-
         void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
             _isConnected = true;
             _disconnectedAt = 0;
-            Serial.println("[BLE] Client Connected");
+            
+            // Create lock if it doesn't exist, then acquire
+            if (powerLock == nullptr) {
+                esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "ble_conn", &powerLock);
+            }
+            esp_pm_lock_acquire(powerLock); 
+            Serial.println("[BLE] Client Connected - Performance Mode Active");
         }
 
         void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
             _isConnected = false;
             _disconnectedAt = millis();
-            Serial.printf("[BLE] Disconnected (%d)\n", reason);
             
+            // RELEASE the lock so the ESP32 can go back to Light Sleep
+            if (powerLock != nullptr) {
+                esp_pm_lock_release(powerLock);
+            }
+            
+            Serial.printf("[BLE] Disconnected (%d) - Light Sleep Allowed\n", reason);
             NimBLEDevice::getAdvertising()->start();
         }
     };
@@ -44,11 +50,18 @@ namespace {
         void onWrite(NimBLECharacteristic* pChar, NimBLEConnInfo& connInfo) override {
             Serial.println("!!! lock DATA RECEIVED !!!");
             std::string value = pChar->getValue();
-            if (value.length() > 0 && value[0] == 0x01) {
-                Serial.println("[BLE] Pairing Command Received");
-                preferences.putBool("paired", true);
-                preferences.end(); 
-                _triggerReboot = true;
+            if (value.length() > 0) {
+                if (value[0] == 0x01) {
+                    Serial.println("[BLE] Pairing...");
+                    preferences.putBool("paired", true);
+                    _triggerReboot = true;
+                } 
+                else if (value[0] == 0x00) {
+                    Serial.println("[BLE] FACTORY RESET COMMAND");
+                    // Clear all stored data
+                    preferences.clear(); 
+                    _triggerReboot = true;
+                }
                 _rebootStartTime = millis();
             }
         }
@@ -88,7 +101,7 @@ namespace BLEManager {
         esp_read_mac(_btMac, ESP_MAC_BT);
 
         NimBLEDevice::init("");
-        NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+        NimBLEDevice::setPower(ESP_PWR_LVL_P3);
         NimBLEDevice::setSecurityAuth(true, true, true);
         NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
 
@@ -101,7 +114,7 @@ namespace BLEManager {
         // Buzzer requires Bonding/Encryption
         pService->createCharacteristic(
             BUZZER_CHAR_UUID, 
-            NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC | NIMBLE_PROPERTY::WRITE_AUTHEN
+            NIMBLE_PROPERTY::WRITE 
         )->setCallbacks(&buzzerCallbacks);
 
         pService->start();

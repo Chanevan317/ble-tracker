@@ -48,4 +48,10 @@ namespace BuzzerManager {
     }
 
     bool isActive() { return _alertActive; }
+
+    void triggerQuickBip() {
+        if (!_alertActive) { // Don't interrupt a panic alert
+            buzzer.beep(100); // Sharp 100ms bip
+        }
+    }
 }

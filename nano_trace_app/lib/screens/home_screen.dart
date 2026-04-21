@@ -96,15 +96,13 @@ class _HomeScreenState extends State<HomeScreen> {
               IconButton(
                 onPressed: () {
                   Navigator.push(
-                    context,
-                    MaterialPageRoute<void>(
-                      builder: (context) => const SettingsScreen(),
-                    ),
-                  );
+                    context, 
+                    MaterialPageRoute(builder: (context) => const SettingsScreen())
+                  ).then((_) => _initData());
                 },
                 icon: Icon(
                   Icons.settings,
-                  size: 28,
+                  size: 24,
                   color: Colors.teal.shade900,
                 ),
               ),

@@ -1,47 +1,53 @@
 import 'dart:math';
 
 enum DistanceRange {
-  veryClose, // 0-1m
-  close, // 1-2m
-  near, // 2-5m
-  far, // 5-10m
-  veryFar, // 10m+
-  unknown; // no signal
+  veryClose, // 0-1.5m
+  close,     // 1.5-3.5m
+  near,      // 3.5-7m
+  far,       // 7-15m
+  veryFar,   // 15m+
+  unknown;
 
   String get label {
     switch (this) {
       case DistanceRange.veryClose:
-        return "Very Close";
+        return "Right Here";
       case DistanceRange.close:
-        return "Close";
+        return "Close By";
       case DistanceRange.near:
-        return "Near";
+        return "Nearby";
       case DistanceRange.far:
-        return "Far";
+        return "Far Away";
       case DistanceRange.veryFar:
         return "Very Far";
       case DistanceRange.unknown:
-        return "Unknown";
+        return "Searching...";
     }
   }
 }
 
 class KalmanDistanceFilter {
-  // Process Noise (Q): How fast the actual distance can change.
-  final double _q = 0.08;
+  // --- TUNING PARAMETERS ---
+  
+  // Process Noise (Q): How fast the distance estimate reacts.
+  // Lower = Smoother Radar, but slower to follow you if you run away.
+  final double _q = 0.015; 
 
-  // Measurement Noise (R): How much "jitter" is in your RSSI sensor.
-  final double _r = 8.0;
+  // Measurement Noise (R): How much we "distrust" the raw RSSI.
+  // BLE RSSI is incredibly noisy. Increasing this prevents "jitter".
+  final double _r = 25.0; 
 
-  double _x = 0.0; // Estimated state (Distance)
-  double _p = 1.0; // Estimation error covariance
+  // --- PHYSICS CONSTANTS (+9 dBm Calibration) ---
+  
+  // RSSI at 1 meter. 
+  static const int measuredPower = -62; 
+
+  // Path Loss Exponent (n). 
+  static const double n = 2.4; 
+
+  double _x = 0.0; // Estimated distance
+  double _p = 1.0; // Error covariance
   double _k = 0.0; // Kalman gain
-
-  // Physics constants for RSSI -> Distance conversion
-  // For ESP32-C3 with ESP_PWR_LVL_P9 (max power ~+9 dBm):
-  // Recalibrated measurement power point at 1 meter
-  static const int measuredPower = -48; // Adjusted for P9 power level
-  static const double n = 2.2; // Path loss exponent
 
   KalmanDistanceFilter() {
     _x = 0.0;
@@ -49,28 +55,38 @@ class KalmanDistanceFilter {
   }
 
   double filter(int rssi) {
-    // 1. Convert raw RSSI to raw Distance
-    double z = pow(10, (measuredPower - rssi) / (10 * n)).toDouble();
+    // 1. OUTLIER REJECTION (The "Spike Guard")
+    // If the RSSI is -100, it's almost always a transient glitch or a hand
+    // covering the phone. We cap it to maintain filter stability.
+    int sanitizedRssi = rssi.clamp(-95, -30);
 
-    // 2. Prediction Step
-    _p = _p + _q;
+    // 2. Convert RSSI to Distance using Log-Distance Path Loss Model
+    // Formula: d = 10 ^ ((MeasuredPower - RSSI) / (10 * n))
+    double z = pow(10, (measuredPower - sanitizedRssi) / (10 * n)).toDouble();
 
-    // 3. Measurement Update (Correction)
-    _k = _p / (_p + _r);
-    _x = _x + _k * (z - _x);
-    _p = (1 - _k) * _p;
+    // 3. INITIALIZATION
+    if (_x == 0.0) {
+      _x = z;
+      return _x;
+    }
 
-    return _x.clamp(0.1, 15.0);
+    // 4. KALMAN MATH
+    _p = _p + _q; // Predict
+    _k = _p / (_p + _r); // Gain
+    _x = _x + _k * (z - _x); // Update
+    _p = (1 - _k) * _p; // Covariance update
+
+    return _x.clamp(0.1, 25.0);
   }
 
-  // Convert filtered distance to range category
   static DistanceRange getRange(double? distance) {
-    if (distance == null) return DistanceRange.unknown;
+    if (distance == null || distance <= 0) return DistanceRange.unknown;
 
-    if (distance < 1.0) return DistanceRange.veryClose;
-    if (distance < 2.0) return DistanceRange.close;
-    if (distance < 5.0) return DistanceRange.near;
-    if (distance < 10.0) return DistanceRange.far;
+    // Adjusted ranges for +9dBm power footprint
+    if (distance < 1.5) return DistanceRange.veryClose;
+    if (distance < 3.5) return DistanceRange.close;
+    if (distance < 7.0) return DistanceRange.near;
+    if (distance < 15.0) return DistanceRange.far;
     return DistanceRange.veryFar;
   }
 

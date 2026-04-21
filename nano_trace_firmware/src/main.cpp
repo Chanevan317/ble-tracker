@@ -3,16 +3,19 @@
 #include "config.h"
 #include "ble/ble_manager.h"
 #include "buzzer/buzzer_manager.h"
+#include "touch/touch_manager.h"
 
 void setup() {
     Serial.begin(115200);
     delay(500);
     Serial.println("--- NANOTRACE BOOTING ---");
     BuzzerManager::init();
+    TouchManager::init();
     BLEManager::init();
 }
 
 void loop() {
+    TouchManager::processTouch();
     BLEManager::update();
 
     // If we are connected or beeping, stay awake.
