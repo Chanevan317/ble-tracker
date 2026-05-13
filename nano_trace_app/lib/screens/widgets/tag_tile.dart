@@ -1,30 +1,123 @@
-import 'package:collection/collection.dart';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import '../../models/tracker_tag.dart';
 import '../tag_screen.dart';
 
-class TagTile extends StatelessWidget {
+class TagTile extends StatefulWidget {
   final TrackerTag tag;
   final VoidCallback onRefresh;
 
-  const TagTile({
-    super.key,
-    required this.tag,
-    required this.onRefresh,
-  });
+  const TagTile({super.key, required this.tag, required this.onRefresh});
+
+  @override
+  State<TagTile> createState() => _TagTileState();
+}
+
+class _TagTileState extends State<TagTile> {
+  StreamSubscription<List<ScanResult>>? _scanSub;
+  Timer? _lostTimer;
+  bool _isNearby = false;
+  int _rssi = -100;
+
+  @override
+  void initState() {
+    super.initState();
+    _startListening();
+  }
+
+  @override
+  void dispose() {
+    _scanSub?.cancel();
+    _lostTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startListening() {
+    _scanSub = FlutterBluePlus.scanResults.listen((results) {
+      for (final r in results) {
+        if (_matchesTag(r)) {
+          _onFound(r.rssi);
+          return;
+        }
+      }
+    });
+  }
+
+  bool _matchesTag(ScanResult r) {
+    // A: MAC match
+    if (r.device.remoteId.str.toLowerCase() ==
+        widget.tag.macAddress.toLowerCase())
+      return true;
+
+    // B: Stealth identity bytes
+    final payload = r.advertisementData.manufacturerData[0xFFFF];
+    if (payload != null && payload.length >= 3) {
+      final identity =
+          payload[0].toRadixString(16).padLeft(2, '0').toUpperCase() +
+          payload[1].toRadixString(16).padLeft(2, '0').toUpperCase() +
+          payload[2].toRadixString(16).padLeft(2, '0').toUpperCase();
+      if (identity == widget.tag.stealthBytes.toUpperCase()) return true;
+    }
+
+    return false;
+  }
+
+  void _onFound(int rssi) {
+    _lostTimer?.cancel();
+    _lostTimer = Timer(const Duration(seconds: 5), _onLost);
+
+    if (mounted) {
+      setState(() {
+        _isNearby = true;
+        _rssi = rssi;
+      });
+    }
+  }
+
+  void _onLost() {
+    if (mounted) {
+      setState(() {
+        _isNearby = false;
+        _rssi = -100;
+      });
+    }
+  }
+
+  // Convert RSSI to a 0-3 signal bar count
+  int get _signalBars {
+    if (_rssi >= -70) return 3;
+    if (_rssi >= -85) return 2;
+    if (_rssi >= -95) return 1;
+    return 0;
+  }
+
+  String get _statusLabel {
+    if (!_isNearby) return "Away";
+    if (_rssi >= -70) return "Close By";
+    if (_rssi >= -85) return "Nearby";
+    return "Far Away";
+  }
+
+  Color get _statusColor {
+    if (!_isNearby) return Colors.grey;
+    if (_rssi >= -70) return Colors.green;
+    if (_rssi >= -85) return Colors.orange;
+    return Colors.red;
+  }
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8.0),
+      padding: const EdgeInsets.only(bottom: 10.0),
       child: InkWell(
         borderRadius: BorderRadius.circular(16.0),
         onTap: () {
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (context) => TagScreen(tag: tag, onUnpair: onRefresh),
+              builder: (context) =>
+                  TagScreen(tag: widget.tag, onUnpair: widget.onRefresh),
             ),
           );
         },
@@ -33,79 +126,112 @@ class TagTile extends StatelessWidget {
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.04),
+                blurRadius: 8,
+                offset: const Offset(0, 2),
+              ),
+            ],
           ),
           child: Padding(
-            padding: const EdgeInsets.all(20.0),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
-                  tag.tagName,
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
+                // ── Tag icon ───────────────────────────────────────────
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: _statusColor.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Icon(
+                    Icons.location_on_outlined,
+                    color: _statusColor,
+                    size: 22,
+                  ),
                 ),
-                
-                StreamBuilder(
-                  // Tick every 2 seconds to force a UI refresh even if no new BLE packets arrive
-                  stream: Stream.periodic(const Duration(seconds: 2)),
-                  builder: (context, snapshot) {
-                    bool isNearby = false;
 
-                    // 1. Get the sticky list of all seen devices
-                    final results = FlutterBluePlus.lastScanResults;
-                    
-                    // 2. Find THIS specific tag in the list
-                    final myTagResult = results.firstWhereOrNull((r) {
-                      bool macMatch = r.device.remoteId.str.toLowerCase() == tag.macAddress.toLowerCase();
-                      
-                      // Fallback check for the stealth manufacturer data signature
-                      final data = r.advertisementData.manufacturerData[65535];
-                      bool sigMatch = data != null && String.fromCharCodes(data) == tag.hardwareName;
-                      
-                      return macMatch || sigMatch;
-                    });
+                const SizedBox(width: 14),
 
-                    // 3. Verify Freshness
-                    if (myTagResult != null) {
-                      final packetAge = DateTime.now().difference(myTagResult.timeStamp).inSeconds;
-                      
-                      // If the packet is older than 10 seconds, it's a "ghost" from the buffer
-                      if (packetAge < 5) {
-                        isNearby = true;
-                        // Optionally update the tag's internal lastSeen for persistence
-                        tag.lastSeen = myTagResult.timeStamp;
-                      }
-                    }
-
-                    // 4. Final fallback check against the persistent lastSeen timestamp
-                    // This helps if the scan results were cleared but we know we saw it recently
-                    if (!isNearby) {
-                      isNearby = DateTime.now().difference(tag.lastSeen).inSeconds < 5;
-                    }
-
-                    return Row(
-                      children: [
-                        Text(
-                          isNearby ? "Nearby" : "Out of Range",
-                          style: TextStyle(
-                            color: isNearby ? Colors.green : Colors.grey,
-                            fontWeight: FontWeight.bold,
-                          ),
+                // ── Tag name + status label ────────────────────────────
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.tag.tagName,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.black87,
                         ),
-                        const SizedBox(width: 8),
-                        Icon(
-                          Icons.circle,
-                          size: 12,
-                          color: isNearby ? Colors.greenAccent : Colors.grey[300],
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        _statusLabel,
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: _statusColor,
+                          fontWeight: FontWeight.w500,
                         ),
-                      ],
-                    );
-                  },
-                )
+                      ),
+                    ],
+                  ),
+                ),
+
+                // ── Signal bars ────────────────────────────────────────
+                if (_isNearby)
+                  _SignalBars(bars: _signalBars, color: _statusColor)
+                else
+                  Icon(
+                    Icons.signal_wifi_off_outlined,
+                    color: Colors.grey[300],
+                    size: 22,
+                  ),
+
+                const SizedBox(width: 4),
+
+                // ── Chevron ────────────────────────────────────────────
+                Icon(Icons.chevron_right, color: Colors.grey[400], size: 20),
               ],
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+// ── Signal bar widget ──────────────────────────────────────────────────────
+
+class _SignalBars extends StatelessWidget {
+  final int bars; // 0-3
+  final Color color;
+
+  const _SignalBars({required this.bars, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: List.generate(3, (i) {
+        final active = i < bars;
+        final height = 8.0 + (i * 5.0); // 8, 13, 18
+        return Padding(
+          padding: const EdgeInsets.only(left: 3),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            width: 5,
+            height: height,
+            decoration: BoxDecoration(
+              color: active ? color : Colors.grey[200],
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+        );
+      }),
     );
   }
 }

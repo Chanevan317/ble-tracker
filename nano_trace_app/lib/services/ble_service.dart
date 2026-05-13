@@ -1,202 +1,342 @@
 import 'dart:async';
-
+import 'dart:math';
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:nano_trace_app/models/tracker_tag.dart';
 
 class BleService {
-  static const String serviceUuid            = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
-  static const String lockCharacteristicUuid = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
-  static const String buzzerCharUuid         = "a1b2c3d4-1234-5678-abcd-ef0123456789";
+  // ── UUIDs — must match firmware exactly ───────────────────────────────────
+  static const String serviceUuid = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+  static const String lockCharUuid = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+  static const String buzzerCharUuid = "a1b2c3d4-1234-5678-abcd-ef0123456789";
+  static const String modeCharUuid = "c0de0001-cafe-babe-dead-beefdeadbeef";
 
   static bool _isBusy = false;
   static bool get isBusy => _isBusy;
 
-  static BluetoothDevice? _nearbyDevice;
-  static BluetoothDevice? get nearbyDevice => _nearbyDevice;
-  static void setNearbyDevice(BluetoothDevice? device) {
-    _nearbyDevice = device;
+  // ── Token helpers ─────────────────────────────────────────────────────────
+
+  static String generateToken() {
+    final rng = Random.secure();
+    return List.generate(
+      4,
+      (_) => rng.nextInt(256),
+    ).map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase()).join();
   }
 
-  // ── Scan results for pairing screen ──────────────────
-  static Stream<List<ScanResult>> nanoTracerResults(List<String> pairedMacs) {
+  static List<int> tokenToBytes(String hex) {
+    return List.generate(
+      4,
+      (i) => int.parse(hex.substring(i * 2, i * 2 + 2), radix: 16),
+    );
+  }
+
+  static String macToStealthBytes(String mac) {
+    final p = mac.split(':');
+    if (p.length != 6) return '';
+    return (p[3] + p[4] + p[5]).toUpperCase();
+  }
+
+  // ── UUID comparison ───────────────────────────────────────────────────────
+
+  static bool _uuidMatches(String a, String b) {
+    String norm(String u) {
+      u = u.toLowerCase().trim();
+      if (u.length == 4) u = "0000$u-0000-1000-8000-00805f9b34fb";
+      return u;
+    }
+
+    return norm(a) == norm(b);
+  }
+
+  // ── Scan helpers ──────────────────────────────────────────────────────────
+
+  static Stream<List<ScanResult>> nanoTracerResults(
+    List<TrackerTag> pairedTags,
+  ) {
     return FlutterBluePlus.scanResults.map((results) {
       return results.where((r) {
-        // 1. If we already paired this MAC, ignore it completely for "New Tag" search
-        if (pairedMacs.contains(r.device.remoteId.str)) return false;
-
         final name = r.advertisementData.advName;
-        final mData = r.advertisementData.manufacturerData;
+        final payload = r.advertisementData.manufacturerData[0xFFFF];
 
-        // 2. Only show it if it looks like an unpaired NanoTrace tag
         if (name.contains("NanoTrace")) return true;
-        if (mData.containsKey(65535)) return true;
+
+        if (payload != null && payload.length >= 3) {
+          final b0 = payload[0];
+          final b1 = payload[1];
+          final b2 = payload[2];
+
+          // Unpaired identity bytes: N=0x4E E=0x45 W=0x57
+          if (b0 == 0x4E && b1 == 0x45 && b2 == 0x57) return true;
+
+          final identity =
+              b0.toRadixString(16).padLeft(2, '0').toUpperCase() +
+              b1.toRadixString(16).padLeft(2, '0').toUpperCase() +
+              b2.toRadixString(16).padLeft(2, '0').toUpperCase();
+
+          return pairedTags.any(
+            (t) => t.stealthBytes.toUpperCase() == identity,
+          );
+        }
 
         return false;
       }).toList();
     });
   }
 
-  // ── Buzzer command ─────────────────────────────────── 
-  static Future<bool> triggerBuzzer(BluetoothDevice device) async {
-    if (_isBusy) return false;
-    _isBusy = true;
+  static TrackerTag? matchTag(ScanResult result, List<TrackerTag> pairedTags) {
+    final payload = result.advertisementData.manufacturerData[0xFFFF];
+    if (payload == null || payload.length < 3) return null;
 
-    try {
-      // 1. Pause scan - Essential on Android to free up the radio
+    final identity =
+        payload[0].toRadixString(16).padLeft(2, '0').toUpperCase() +
+        payload[1].toRadixString(16).padLeft(2, '0').toUpperCase() +
+        payload[2].toRadixString(16).padLeft(2, '0').toUpperCase();
+
+    return pairedTags.firstWhereOrNull(
+      (t) => t.stealthBytes.toUpperCase() == identity,
+    );
+  }
+
+  // Read battery level from advertisement — no connection needed
+  // Returns 0-4 or null if not available
+  static int? getBatteryLevel(ScanResult result) {
+    final payload = result.advertisementData.manufacturerData[0xFFFF];
+    if (payload == null || payload.length < 6) return null;
+    return payload[5]; // byte index 5 = battery level
+  }
+
+  // Read search mode flag from advertisement — no connection needed
+  // Returns true if tag is currently in search mode
+  static bool isInSearchMode(ScanResult result) {
+    final payload = result.advertisementData.manufacturerData[0xFFFF];
+    if (payload == null || payload.length < 7) return false;
+    return (payload[6] & 0x01) != 0; // bit0 of flags byte
+  }
+
+  // ── Internal helpers ──────────────────────────────────────────────────────
+
+  static Future<BluetoothDevice> _connect(
+    String remoteId, {
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    if (FlutterBluePlus.isScanningNow) {
       await FlutterBluePlus.stopScan();
-      
-      // 2. Fast Connect
-      // Since no encryption is needed, a 2-3s timeout is plenty
-      await device.connect(license: License.free, timeout: const Duration(seconds: 3), autoConnect: false);
-
-      // 3. Short breather for Service Discovery
-      // We still need a tiny delay so the GATT table is ready
       await Future.delayed(const Duration(milliseconds: 300));
-      List<BluetoothService> services = await device.discoverServices();
-      
-      BluetoothCharacteristic? buzzerChar;
-      for (var s in services) {
-        if (s.uuid.str128.toLowerCase() == serviceUuid.toLowerCase()) {
-          buzzerChar = s.characteristics.firstWhereOrNull(
-            (c) => c.uuid.str128.toLowerCase() == buzzerCharUuid.toLowerCase()
-          );
-        }
-      }
+    }
 
-      if (buzzerChar != null) {
-        // 4. Fire the command
-        // 'withoutResponse: false' is good here to ensure the ESP32 actually got it
-        await buzzerChar.write([0x01], timeout: 2);
-        debugPrint("[BLE] Bip sent successfully ✓");
-        return true;
-      }
-      return false;
+    final device = BluetoothDevice.fromId(remoteId);
 
-    } catch (e) {
-      debugPrint("[BLE] Bip failed: $e");
-      return false;
-    } finally {
-      // 5. Clean up & Resume Scan immediately
+    if (device.isConnected) {
       await device.disconnect();
-      _isBusy = false;
-      
-      // Fire the scan restart without 'awaiting' to keep the UI snappy
-      FlutterBluePlus.startScan(
-        continuousUpdates: true, 
-        androidScanMode: AndroidScanMode.lowLatency
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+
+    await device.connect(
+      license: License.free,
+      timeout: timeout,
+      autoConnect: false,
+    );
+    debugPrint("[BLE] Connected to $remoteId");
+
+    try {
+      await device.clearGattCache();
+    } catch (e) {
+      debugPrint("[BLE] clearGattCache skipped: $e");
+    }
+
+    await Future.delayed(const Duration(milliseconds: 500));
+    return device;
+  }
+
+  static Future<void> _safeDisconnect(BluetoothDevice? device) async {
+    if (device == null) return;
+    try {
+      if (device.isConnected) await device.disconnect();
+    } catch (_) {}
+  }
+
+  static Future<void> _resumeScan() async {
+    try {
+      await FlutterBluePlus.startScan(
+        continuousUpdates: true,
+        androidScanMode: AndroidScanMode.lowLatency,
       );
+    } catch (e) {
+      debugPrint("[BLE] Scan resume error: $e");
     }
   }
 
-  // ── Pairing ───────────────────────
-  static Future<String?> pairAndBond(String remoteId) async {
-    BluetoothDevice device = BluetoothDevice.fromId(remoteId);
-    try {
-      await FlutterBluePlus.stopScan(); // Pause scanning during connection
-      
-      await device.connect(
-        license: License.free, 
-        timeout: const Duration(seconds: 10),
-        autoConnect: false
-      );
-      
-      // REMOVED: await device.createBond(); <-- This was causing the Cache Trap!
-      await Future.delayed(const Duration(milliseconds: 500)); 
-
-      final services = await device.discoverServices();
-      for (var service in services) {
-        if (service.uuid.str128.toLowerCase() == serviceUuid.toLowerCase()) {
-          for (var char in service.characteristics) {
-            if (char.uuid.str128.toLowerCase() == lockCharacteristicUuid.toLowerCase()) {
-              
-              // 1. Send 0x01 to lock the hardware.
-              await char.write([0x01]);
-              
-              // 2. Give the ESP32 half a second to process and trigger its reboot
-              await Future.delayed(const Duration(milliseconds: 500)); 
-              await device.disconnect(); 
-              
-              // 3. CRUCIAL DELAY: Wait for the ESP32 to finish rebooting into Stealth Mode!
-              debugPrint("[BLE] Waiting for ESP32 to reboot...");
-              await Future.delayed(const Duration(milliseconds: 2500));
-              
-              // 4. Now start scanning fresh
-              FlutterBluePlus.startScan(
-                continuousUpdates: true,
-                androidScanMode: AndroidScanMode.lowLatency,
-              ).catchError((e) => debugPrint("[BLE] Scan restart error: $e"));
-
-              // --- GENERATE THE STEALTH IDENTITY ---
-              List<String> macParts = remoteId.split(':');
-              if (macParts.length == 6) {
-                int b3 = int.parse(macParts[3], radix: 16);
-                int b4 = int.parse(macParts[4], radix: 16);
-                int b5 = int.parse(macParts[5], radix: 16);
-                return String.fromCharCodes([b3, b4, b5]);
-              }
-              
-              return null;
-            }
-          }
+  static Future<BluetoothCharacteristic?> _getChar(
+    BluetoothDevice device,
+    String charUuid,
+  ) async {
+    final services = await device.discoverServices();
+    for (final s in services) {
+      if (_uuidMatches(s.uuid.str128, serviceUuid)) {
+        for (final c in s.characteristics) {
+          if (_uuidMatches(c.uuid.str128, charUuid)) return c;
         }
       }
+    }
+    debugPrint("[BLE] Char not found: $charUuid");
+    return null;
+  }
+
+  // ── Pairing ───────────────────────────────────────────────────────────────
+
+  static Future<TrackerTag?> pairTag({
+    required String remoteId,
+    required String tagName,
+  }) async {
+    if (_isBusy) _isBusy = false; // safety reset if stuck
+    _isBusy = true;
+
+    BluetoothDevice? device;
+    bool wrote = false;
+
+    try {
+      final token = generateToken();
+      final bytes = tokenToBytes(token);
+      final stealthBytes = macToStealthBytes(remoteId);
+
+      debugPrint("[PAIR] remoteId=$remoteId token=$token");
+
+      device = await _connect(remoteId, timeout: const Duration(seconds: 10));
+
+      final lockChar = await _getChar(device, lockCharUuid);
+      if (lockChar == null) {
+        debugPrint("[PAIR] Lock char not found");
+        return null;
+      }
+
+      await lockChar.write([0x01, ...bytes], withoutResponse: false);
+      debugPrint("[PAIR] Claimed ✓");
+      wrote = true;
+
+      await Future.delayed(const Duration(milliseconds: 800));
+      await _safeDisconnect(device);
+
+      // Wait for firmware reboot into stealth mode
+      await Future.delayed(const Duration(milliseconds: 3000));
+
+      return TrackerTag(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        tagName: tagName,
+        macAddress: remoteId,
+        token: token,
+        stealthBytes: stealthBytes,
+        lastSeen: DateTime.now(),
+      );
+    } catch (e, stack) {
+      debugPrint("[PAIR] Failed: $e\n$stack");
       return null;
-    } catch (e) {
-      debugPrint("[BLE] Pairing failed: $e");
-      return null;
+    } finally {
+      if (!wrote) await _safeDisconnect(device);
+      _isBusy = false;
+      await _resumeScan();
     }
   }
 
-  // ── Unpairing ───────────────────────
-  static Future<bool> factoryResetTag(BluetoothDevice device) async {
+  // ── Factory reset ─────────────────────────────────────────────────────────
+
+  static Future<bool> factoryResetTag(TrackerTag tag) async {
     if (_isBusy) return false;
     _isBusy = true;
 
+    BluetoothDevice? device;
     try {
-      await FlutterBluePlus.stopScan();
-      await device.connect(
-        license: License.free, 
-        timeout: const Duration(seconds: 5), 
-        autoConnect: false
-      );
-      await Future.delayed(const Duration(milliseconds: 500));
-      
-      final services = await device.discoverServices();
-      for (var s in services) {
-        if (s.uuid.toString().toLowerCase() == serviceUuid.toLowerCase()) {
-          final char = s.characteristics.firstWhereOrNull(
-            (c) => c.uuid.toString().toLowerCase() == lockCharacteristicUuid.toLowerCase()
-          );
-          if (char != null) {
-            
-            // 1. Send Reset Command
-            await char.write([0x00]); 
-            debugPrint("[BLE] Hardware Reset Command Sent");
-            
-            // 2. Wait for ESP to trigger reboot
-            await Future.delayed(const Duration(milliseconds: 500));
-            await device.disconnect();
-            
-            // 3. CRUCIAL DELAY: Wait for ESP32 to finish rebooting to Visible Mode
-            debugPrint("[BLE] Waiting for ESP32 to reboot into Visible mode...");
-            await Future.delayed(const Duration(milliseconds: 2500));
-            
-            return true;
-          }
-        }
-      }
-      return false;
+      device = await _connect(tag.macAddress);
+
+      final lockChar = await _getChar(device, lockCharUuid);
+      if (lockChar == null) return false;
+
+      await lockChar.write([
+        0x00,
+        ...tokenToBytes(tag.token),
+      ], withoutResponse: false);
+      debugPrint("[RESET] Released ✓");
+
+      await Future.delayed(const Duration(milliseconds: 800));
+      await _safeDisconnect(device);
+      await Future.delayed(const Duration(milliseconds: 3000));
+      return true;
     } catch (e) {
-      debugPrint("[BLE] Reset failed: $e");
+      debugPrint("[RESET] Failed: $e");
       return false;
     } finally {
-      // Ensure we clean up even if it fails
-      if (device.isConnected) {
-        await device.disconnect();
-      }
+      await _safeDisconnect(device);
       _isBusy = false;
-      FlutterBluePlus.startScan(continuousUpdates: true, androidScanMode: AndroidScanMode.lowLatency);
+      await _resumeScan();
+    }
+  }
+
+  // ── Buzzer ────────────────────────────────────────────────────────────────
+
+  static Future<bool> triggerBuzzer(TrackerTag tag) async {
+    if (_isBusy) return false;
+    _isBusy = true;
+
+    BluetoothDevice? device;
+    try {
+      device = await _connect(
+        tag.macAddress,
+        timeout: const Duration(seconds: 5),
+      );
+
+      final buzzer = await _getChar(device, buzzerCharUuid);
+      if (buzzer == null) return false;
+
+      await buzzer.write([
+        ...tokenToBytes(tag.token),
+        0x01,
+      ], withoutResponse: false);
+      debugPrint("[BUZZ] Triggered ✓");
+      return true;
+    } catch (e) {
+      debugPrint("[BUZZ] Failed: $e");
+      return false;
+    } finally {
+      await _safeDisconnect(device);
+      _isBusy = false;
+      await _resumeScan();
+    }
+  }
+
+  // ── Search mode ───────────────────────────────────────────────────────────
+  // Sends mode command then immediately disconnects.
+  // Tag switches advertising interval and TX power autonomously.
+  // Internal 5-min safety timer on firmware reverts if app dies.
+
+  static Future<bool> setSearchMode(TrackerTag tag, bool enable) async {
+    if (_isBusy) return false;
+    _isBusy = true;
+
+    BluetoothDevice? device;
+    try {
+      device = await _connect(
+        tag.macAddress,
+        timeout: const Duration(seconds: 5),
+      );
+
+      final modeChar = await _getChar(device, modeCharUuid);
+      if (modeChar == null) return false;
+
+      await modeChar.write([
+        ...tokenToBytes(tag.token),
+        enable ? 0x01 : 0x00,
+      ], withoutResponse: false);
+      debugPrint("[MODE] Search mode ${enable ? 'ON' : 'OFF'} ✓");
+      return true;
+    } catch (e) {
+      debugPrint("[MODE] Failed: $e");
+      return false;
+    } finally {
+      // Always disconnect — tag advertises unconnected in search mode
+      await _safeDisconnect(device);
+      _isBusy = false;
+      await _resumeScan();
     }
   }
 }

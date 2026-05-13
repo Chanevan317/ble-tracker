@@ -60,7 +60,7 @@ class _HomeScreenState extends State<HomeScreen> {
     Map<Permission, PermissionStatus> statuses = await [
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
-      Permission.location, 
+      Permission.location,
     ].request();
 
     if (statuses[Permission.bluetoothScan]!.isGranted) {
@@ -68,11 +68,11 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!FlutterBluePlus.isScanningNow) {
         _startGlobalScan();
       }
-      
+
       if (!mounted) return;
       AddTagSheet.show(context, (newTag) async {
         setState(() {
-          myTags.add(newTag); 
+          myTags.add(newTag);
         });
         await StorageService.saveTags(myTags);
       });
@@ -96,8 +96,10 @@ class _HomeScreenState extends State<HomeScreen> {
               IconButton(
                 onPressed: () {
                   Navigator.push(
-                    context, 
-                    MaterialPageRoute(builder: (context) => const SettingsScreen())
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const SettingsScreen(),
+                    ),
                   ).then((_) => _initData());
                 },
                 icon: Icon(
@@ -129,20 +131,10 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
 
             myTags.isEmpty
-              ? const Center(child: Text("No paired tags. Add a new tag."))
-              : StreamBuilder<List<ScanResult>>(
-                  stream: FlutterBluePlus.scanResults,
-                  builder: (context, snapshot) {
-                    // Every time a new scan result comes in, this block can trigger 
-                    // if you want to re-sort or refresh the whole list view.
-                    return Expanded(
-                      child: TagList(
-                        tags: myTags,
-                        onRefresh: _initData, 
-                      ),
-                    );
-                  },
-                ),
+                ? const Center(child: Text("No paired tags. Add a new tag."))
+                : Expanded(
+                    child: TagList(tags: myTags, onRefresh: _initData),
+                  ),
           ],
         ),
       ),
@@ -153,7 +145,7 @@ class _HomeScreenState extends State<HomeScreen> {
         label: const Text("New Tag"),
         backgroundColor: Colors.teal,
         foregroundColor: Colors.white,
-        elevation: 8.0, 
+        elevation: 8.0,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16.0),
         ),

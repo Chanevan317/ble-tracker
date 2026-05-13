@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:nano_trace_app/models/tracker_tag.dart';
@@ -25,13 +24,16 @@ class AddTagSheet {
             return Padding(
               padding: EdgeInsets.only(
                 bottom: MediaQuery.of(context).viewInsets.bottom + 32,
-                left: 24, right: 24, top: 24,
+                left: 24,
+                right: 24,
+                top: 24,
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Container(
-                    width: 40, height: 4,
+                    width: 40,
+                    height: 4,
                     decoration: BoxDecoration(
                       color: Colors.grey[300],
                       borderRadius: BorderRadius.circular(2),
@@ -41,17 +43,19 @@ class AddTagSheet {
 
                   Text(
                     isPairing
-                        ? "Securing Connection..."
-                        : (isNamingStep ? "Name your Tag" : "Searching..."),
-                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                        ? "Linking Tag..."
+                        : isNamingStep
+                        ? "Name your Tag"
+                        : "Searching for Tags...",
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                   const SizedBox(height: 20),
 
-                  if (isPairing) ...[
-                    const CircularProgressIndicator(color: Colors.teal),
-                    const SizedBox(height: 20, width: double.infinity),
-                    const Text("Linking this NanoTracer to your phone..."),
-                  ] else if (!isNamingStep) ...[
+                  // ── Step 1: scanning ──────────────────────────────────
+                  if (!isNamingStep && !isPairing) ...[
                     const LinearProgressIndicator(color: Colors.teal),
                     const SizedBox(height: 10),
                     ConstrainedBox(
@@ -60,38 +64,62 @@ class AddTagSheet {
                         future: StorageService.loadTags(),
                         builder: (context, tagsSnapshot) {
                           final pairedTags = tagsSnapshot.data ?? [];
-                          final pairedHardwareNames = pairedTags.map((t) => t.hardwareName).toSet();
 
                           return StreamBuilder<List<ScanResult>>(
-                            stream: BleService.nanoTracerResults(pairedTags.map((t) => t.macAddress).toList()),
+                            // Pass full tag list for stealth matching
+                            stream: BleService.nanoTracerResults(pairedTags),
                             builder: (context, snapshot) {
                               final results = snapshot.data ?? [];
-                              final availableDevices = results.where((r) {
-                                // Exclude already paired MACs
-                                return !pairedHardwareNames.contains(r.device.remoteId.str);
+
+                              // Only show UNPAIRED tags in the add sheet
+                              // Unpaired = has name "NanoTrace" or NEW identity bytes
+                              final unpaired = results.where((r) {
+                                final name = r.advertisementData.advName;
+                                if (name.contains("NanoTrace")) return true;
+                                final payload = r
+                                    .advertisementData
+                                    .manufacturerData[0xFFFF];
+                                if (payload != null && payload.length >= 3) {
+                                  return payload[0] == 0x4E &&
+                                      payload[1] == 0x45 &&
+                                      payload[2] == 0x57;
+                                }
+                                return false;
                               }).toList();
 
-                              if (availableDevices.isEmpty) {
+                              if (unpaired.isEmpty) {
                                 return const Center(
                                   child: Padding(
                                     padding: EdgeInsets.all(20.0),
-                                    child: Text("Searching for new NanoTracers..."),
+                                    child: Text(
+                                      "Searching for new NanoTrace tags...\n\n"
+                                      "Make sure your tag is powered on and nearby.",
+                                      textAlign: TextAlign.center,
+                                    ),
                                   ),
                                 );
                               }
 
                               return ListView.builder(
                                 shrinkWrap: true,
-                                itemCount: availableDevices.length,
+                                itemCount: unpaired.length,
                                 itemBuilder: (context, index) {
-                                  final data = availableDevices[index];
+                                  final result = unpaired[index];
                                   return ListTile(
-                                    leading: const Icon(Icons.bluetooth_searching, color: Colors.teal),
-                                    title: const Text("New NanoTracer"),
-                                    subtitle: Text(data.device.remoteId.str),
+                                    leading: const Icon(
+                                      Icons.bluetooth_searching,
+                                      color: Colors.teal,
+                                    ),
+                                    title: const Text("New NanoTrace Tag"),
+                                    subtitle: Text(result.device.remoteId.str),
+                                    trailing: Text(
+                                      "${result.rssi} dBm",
+                                      style: TextStyle(color: Colors.grey[600]),
+                                    ),
                                     onTap: () {
                                       setModalState(() {
-                                        discoveredId = data.device.remoteId.str;
+                                        discoveredId =
+                                            result.device.remoteId.str;
                                         isNamingStep = true;
                                       });
                                     },
@@ -103,13 +131,17 @@ class AddTagSheet {
                         },
                       ),
                     ),
-                  ] else ...[
+                  ]
+                  // ── Step 2: naming ────────────────────────────────────
+                  else if (isNamingStep && !isPairing) ...[
                     TextField(
                       controller: nameController,
                       autofocus: true,
                       decoration: InputDecoration(
                         labelText: "Tag Name (e.g. My Keys)",
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
                       ),
                     ),
                     const SizedBox(height: 24),
@@ -118,40 +150,53 @@ class AddTagSheet {
                       height: 55,
                       child: FilledButton(
                         onPressed: () async {
-                          if (nameController.text.isNotEmpty && discoveredId != null) {
-                            setModalState(() => isPairing = true);
+                          final name = nameController.text.trim();
+                          if (name.isEmpty || discoveredId == null) return;
 
-                            // Pair & get the 3-byte stealth MAC
-                            String? hardwareName = await BleService.pairAndBond(discoveredId!);
+                          setModalState(() => isPairing = true);
 
-                            if (hardwareName != null) {
-                              final newTag = TrackerTag(
-                                id: DateTime.now().millisecondsSinceEpoch.toString(),
-                                tagName: nameController.text,
-                                hardwareName: hardwareName, // The 3-byte stealth code
-                                macAddress: discoveredId!,  // The full 8C:FD... address
-                                lastSeen: DateTime.now(),
+                          // Pair and get full TrackerTag back
+                          final newTag = await BleService.pairTag(
+                            remoteId: discoveredId!,
+                            tagName: name,
+                          );
+
+                          if (newTag != null) {
+                            onTagAdded(newTag);
+                            if (context.mounted) Navigator.pop(context);
+                          } else {
+                            setModalState(() => isPairing = false);
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text("Pairing failed. Try again."),
+                                ),
                               );
-
-                              onTagAdded(newTag);
-                              if (context.mounted) Navigator.pop(context);
-
-                            } else {
-                              setModalState(() => isPairing = false);
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text("Failed to lock tag. Try again.")),
-                                );
-                              }
                             }
                           }
                         },
                         style: FilledButton.styleFrom(
                           backgroundColor: Colors.teal,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
                         ),
-                        child: const Text("Add to My Trackers"),
+                        child: const Text(
+                          "Add to My Trackers",
+                          style: TextStyle(fontSize: 16),
+                        ),
                       ),
+                    ),
+                  ]
+                  // ── Step 3: pairing in progress ───────────────────────
+                  else ...[
+                    const CircularProgressIndicator(color: Colors.teal),
+                    const SizedBox(height: 20),
+                    const Text("Linking tag to your phone..."),
+                    const SizedBox(height: 8),
+                    Text(
+                      "Do not close this screen",
+                      style: TextStyle(color: Colors.grey[600], fontSize: 12),
                     ),
                   ],
                 ],

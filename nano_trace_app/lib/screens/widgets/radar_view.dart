@@ -19,15 +19,11 @@ class RadarView extends StatelessWidget {
     if (!isConnected) return Colors.grey.shade400; // Grey if disconnected
 
     switch (distanceRange) {
-      case DistanceRange.veryClose:
-        return Colors.green; // Bright green
       case DistanceRange.close:
-        return Colors.green.shade600; // Darker green
+        return Colors.green; // Bright green
       case DistanceRange.near:
         return Colors.yellow.shade700; // Yellow-orange
-      case DistanceRange.far:
-        return Colors.orange; // Orange
-      case DistanceRange.veryFar:
+      case DistanceRange.farAway:
         return Colors.red; // Red
       case DistanceRange.unknown:
         return Colors.teal; // Teal if searching

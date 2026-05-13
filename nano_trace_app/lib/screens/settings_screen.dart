@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:nano_trace_app/models/tracker_tag.dart';
 import 'package:nano_trace_app/services/storage_service.dart';
 import 'package:nano_trace_app/services/ble_service.dart';
@@ -26,89 +25,175 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() => _myTags = tags);
   }
 
-  // --- PERSISTENCE HELPERS ---
-  Future<void> _updateTagSettings() async {
-    await StorageService.saveTags(_myTags);
-  }
+  // ── Rename ──────────────────────────────────────────────────────────────────
 
-  // --- THE UNPAIR SEQUENCE (RESTORED) ---
-  Future<void> _unpairSequence(TrackerTag tag) async {
-    setState(() => _isProcessing = true);
-
-    // 1. Attempt Hardware Reset (The "Polite" way)
-    try {
-      await BleService.factoryResetTag(BluetoothDevice.fromId(tag.macAddress))
-          .timeout(const Duration(seconds: 6));
-    } catch (e) {
-      debugPrint("Hardware was unreachable, proceeding with local deletion.");
-    }
-
-    // 2. Database Cleanup
-    List<TrackerTag> currentTags = await StorageService.loadTags();
-    currentTags.removeWhere((t) => t.id == tag.id);
-    await StorageService.saveTags(currentTags);
-
-    // 3. UI Refresh
-    setState(() {
-      _myTags = currentTags;
-      _isProcessing = false;
-    });
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("${tag.tagName} removed successfully.")),
-      );
-      if (_myTags.isEmpty) Navigator.pop(context);
-    }
-  }
-
-  void _confirmUnpair(TrackerTag tag) {
+  void _showRenameDialog(TrackerTag tag) {
+    final controller = TextEditingController(text: tag.tagName);
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text("Unpair ${tag.tagName}?"),
-        content: const Text("This removes the tag from your database. If nearby, it will also be factory reset."),
+        title: const Text("Rename Tag"),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: InputDecoration(
+            labelText: "Tag name",
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
           TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _unpairSequence(tag);
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("Cancel"),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.teal),
+            onPressed: () async {
+              final newName = controller.text.trim();
+              if (newName.isEmpty) return;
+              Navigator.pop(ctx);
+
+              final idx = _myTags.indexWhere((t) => t.id == tag.id);
+              if (idx == -1) return;
+
+              setState(() {
+                _myTags[idx] = TrackerTag(
+                  id: tag.id,
+                  tagName: newName,
+                  macAddress: tag.macAddress,
+                  token: tag.token,
+                  stealthBytes: tag.stealthBytes,
+                  lastSeen: tag.lastSeen,
+                );
+              });
+              await StorageService.saveTags(_myTags);
+
+              if (mounted) {
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(SnackBar(content: Text("Renamed to $newName")));
+              }
             },
-            child: const Text("Unpair", style: TextStyle(color: Colors.red)),
+            child: const Text("Save"),
           ),
         ],
       ),
     );
   }
 
-  // --- UI BUILDING ---
+  // ── Unpair ───────────────────────────────────────────────────────────────────
+
+  void _confirmUnpair(TrackerTag tag) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text("Unpair ${tag.tagName}?"),
+        content: const Text(
+          "The app will attempt to factory reset the tag over BLE. "
+          "If the tag is out of range, it will be removed locally only — "
+          "bring it back in range and re-pair to restore it.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("Cancel"),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _unpairSequence(tag);
+            },
+            child: const Text("Unpair"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _unpairSequence(TrackerTag tag) async {
+    setState(() => _isProcessing = true);
+
+    bool hardwareReset = false;
+    try {
+      hardwareReset = await BleService.factoryResetTag(
+        tag,
+      ).timeout(const Duration(seconds: 12));
+    } catch (e) {
+      debugPrint("[SETTINGS] Hardware reset failed: $e");
+    }
+
+    final current = await StorageService.loadTags();
+    current.removeWhere((t) => t.id == tag.id);
+    await StorageService.saveTags(current);
+
+    setState(() {
+      _myTags = current;
+      _isProcessing = false;
+    });
+
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          hardwareReset
+              ? "${tag.tagName} unpaired and reset."
+              : "${tag.tagName} removed locally. "
+                    "Bring tag nearby to fully reset it.",
+        ),
+      ),
+    );
+
+    if (_myTags.isEmpty) Navigator.pop(context);
+  }
+
+  // ── Build ────────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F5),
       appBar: AppBar(
-        title: const Text("Settings", style: TextStyle(fontWeight: FontWeight.w600)),
+        title: const Text(
+          "Settings",
+          style: TextStyle(fontWeight: FontWeight.w600),
+        ),
         backgroundColor: const Color(0xFFF5F5F5),
         elevation: 0,
       ),
-      body: _myTags.isEmpty
-        ? const Center(child: Text("No tags paired", style: TextStyle(color: Colors.grey)))
-        : ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              _buildInstructionHeader(),
-              
-              const SizedBox(height: 16),
-
-              ..._myTags.map((tag) => _buildSettingsCard(tag)),
-            ],
-          ),
+      body: _isProcessing
+          ? const Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(color: Colors.teal),
+                  SizedBox(height: 16),
+                  Text("Resetting tag..."),
+                ],
+              ),
+            )
+          : _myTags.isEmpty
+          ? const Center(
+              child: Text(
+                "No tags paired",
+                style: TextStyle(color: Colors.grey),
+              ),
+            )
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                _buildHeader(),
+                const SizedBox(height: 16),
+                ..._myTags.map((tag) => _buildTagCard(tag)),
+              ],
+            ),
     );
   }
 
-  Widget _buildInstructionHeader() {
+  Widget _buildHeader() {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -116,30 +201,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: Colors.teal.withValues(alpha: 0.1)),
       ),
-      child: const Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: const Row(
         children: [
-          Row(
-            children: [
-              Icon(Icons.info_outline, color: Colors.teal, size: 20),
-              SizedBox(width: 8),
-              Text(
-                "Configure your Tags",
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                  color: Colors.teal,
-                ),
-              ),
-            ],
-          ),
-          SizedBox(height: 8),
-          Text(
-            "Adjust how each NanoTrace tag behaves. You can enable alerts to be notified when a tag is left behind, or unpair a tag to reset it.",
-            style: TextStyle(
-              fontSize: 13,
-              color: Colors.black87,
-              height: 1.4,
+          Icon(Icons.info_outline, color: Colors.teal, size: 20),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              "Manage your paired NanoTrace tags.",
+              style: TextStyle(fontSize: 13, color: Colors.black87),
             ),
           ),
         ],
@@ -147,107 +216,85 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _buildSettingsCard(TrackerTag tag) {
+  Widget _buildTagCard(TrackerTag tag) {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
-          BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 10, offset: const Offset(0, 4))
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
         ],
       ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(16),
-        child: Theme(
-          data: Theme.of(context).copyWith(
-            dividerColor: Colors.transparent,
-            hoverColor: Colors.transparent,
-            splashColor: Colors.teal.withValues(alpha: 0.04),
-          ),
-          child: ExpansionTile(
-            // 3. This ensures the background stays white when expanded
-            collapsedBackgroundColor: Colors.white,
-            backgroundColor: Colors.white,
-            
-            // 4. This removes the 'sharp' border that ExpansionTile adds when open
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            collapsedShape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            
-            tilePadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-            title: Text(tag.tagName, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-            subtitle: Text(
-              tag.macAddress.toUpperCase(), 
-              style: const TextStyle(fontSize: 11, color: Colors.grey, fontFamily: 'monospace')
-            ),
-            children: [
-              const Divider(height: 1, indent: 20, endIndent: 20),
-              
-              // Toggle for Alerts
-              SwitchListTile(
-                title: const Text("Separation Alerts"),
-                subtitle: const Text("Notify and vibrate if out of range"),
-                value: tag.alertsEnabled,
-                activeTrackColor: Colors.teal,
-                onChanged: (val) {
-                  setState(() => tag.alertsEnabled = val);
-                  _updateTagSettings();
-                },
-              ),
-        
-              // Alert Repeat Slider
-              if (tag.alertsEnabled) ...[
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text("Repeat Alert:"),
-                      Text("${tag.maxAlertCount}x", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.teal)),
-                    ],
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ── Tag name + rename ───────────────────────────────────
+            Row(
+              children: [
+                const Icon(Icons.tag, color: Colors.teal, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    tag.tagName,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-                Slider(
-                  value: tag.maxAlertCount.toDouble(),
-                  min: 1,
-                  max: 10,
-                  divisions: 9,
-                  activeColor: Colors.teal,
-                  onChanged: (val) {
-                    setState(() => tag.maxAlertCount = val.toInt());
-                  },
-                  onChangeEnd: (val) => _updateTagSettings(),
-                ),
-                const Padding(
-                  padding: EdgeInsets.only(left: 24, right: 24, bottom: 16),
-                  child: Text("The phone will alert every 20s for the specified count.", 
-                    style: TextStyle(fontSize: 11, color: Colors.grey, fontStyle: FontStyle.italic)),
+                IconButton(
+                  onPressed: _isProcessing
+                      ? null
+                      : () => _showRenameDialog(tag),
+                  icon: const Icon(Icons.edit_outlined, size: 20),
+                  tooltip: "Rename",
+                  color: Colors.teal,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
                 ),
               ],
-        
-              // Action Buttons
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextButton.icon(
-                        onPressed: _isProcessing ? null : () => _confirmUnpair(tag),
-                        icon: const Icon(Icons.delete_forever, size: 20),
-                        label: const Text("Unpair & Reset"),
-                        style: TextButton.styleFrom(
-                          foregroundColor: Colors.redAccent,
-                          backgroundColor: Colors.redAccent.withOpacity(0.1),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                      ),
-                    ),
-                  ],
+            ),
+
+            const SizedBox(height: 4),
+
+            Text(
+              tag.macAddress.toUpperCase(),
+              style: const TextStyle(
+                fontSize: 11,
+                color: Colors.grey,
+                fontFamily: 'monospace',
+              ),
+            ),
+
+            const SizedBox(height: 16),
+            const Divider(height: 1),
+            const SizedBox(height: 16),
+
+            // ── Unpair ──────────────────────────────────────────────
+            SizedBox(
+              width: double.infinity,
+              child: TextButton.icon(
+                onPressed: _isProcessing ? null : () => _confirmUnpair(tag),
+                icon: const Icon(Icons.link_off, size: 18),
+                label: const Text("Unpair & Reset Tag"),
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.redAccent,
+                  backgroundColor: Colors.redAccent.withValues(alpha: 0.08),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );

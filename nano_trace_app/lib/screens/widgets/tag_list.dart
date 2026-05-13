@@ -12,12 +12,8 @@ class TagList extends StatelessWidget {
   Widget build(BuildContext context) {
     return ListView.builder(
       itemCount: tags.length,
-      itemBuilder: (context, index) {
-        return TagTile(
-          tag: tags[index],
-          onRefresh: onRefresh,
-        );
-      },
+      itemBuilder: (context, index) =>
+          TagTile(tag: tags[index], onRefresh: onRefresh),
     );
   }
 }

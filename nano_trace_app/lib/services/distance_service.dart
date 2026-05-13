@@ -1,97 +1,189 @@
 import 'dart:math';
 
 enum DistanceRange {
-  veryClose, // 0-1.5m
-  close,     // 1.5-3.5m
-  near,      // 3.5-7m
-  far,       // 7-15m
-  veryFar,   // 15m+
+  close,
+  near,
+  farAway,
   unknown;
 
   String get label {
     switch (this) {
-      case DistanceRange.veryClose:
-        return "Right Here";
       case DistanceRange.close:
         return "Close By";
       case DistanceRange.near:
         return "Nearby";
-      case DistanceRange.far:
+      case DistanceRange.farAway:
         return "Far Away";
-      case DistanceRange.veryFar:
-        return "Very Far";
-      case DistanceRange.unknown:
+      default:
         return "Searching...";
     }
   }
 }
 
-class KalmanDistanceFilter {
-  // --- TUNING PARAMETERS ---
-  
-  // Process Noise (Q): How fast the distance estimate reacts.
-  // Lower = Smoother Radar, but slower to follow you if you run away.
-  final double _q = 0.015; 
+class DistanceService {
+  // ── Kalman state ───────────────────────────────────────────────────────────
+  static const double _Qslow = 0.1; // slow decay — stationary, small drift
+  static const double _Qfast = 3.0; // fast attack — large signal change
+  static const double _R = 6.0; // measurement noise variance
+  double _x = -70.0;
+  double _p = 1.0;
 
-  // Measurement Noise (R): How much we "distrust" the raw RSSI.
-  // BLE RSSI is incredibly noisy. Increasing this prevents "jitter".
-  final double _r = 25.0; 
+  // ── Median window ──────────────────────────────────────────────────────────
+  final List<int> _window = [];
+  static const int _windowSize = 3;
 
-  // --- PHYSICS CONSTANTS (+9 dBm Calibration) ---
-  
-  // RSSI at 1 meter. 
-  static const int measuredPower = -62; 
+  // ── Hysteresis ─────────────────────────────────────────────────────────────
+  DistanceRange _currentRange = DistanceRange.unknown;
+  static const double _hysteresis = 3.0;
 
-  // Path Loss Exponent (n). 
-  static const double n = 2.4; 
+  // ── Debounce ───────────────────────────────────────────────────────────────
+  DistanceRange _pendingRange = DistanceRange.unknown;
+  int _pendingCount = 0;
 
-  double _x = 0.0; // Estimated distance
-  double _p = 1.0; // Error covariance
-  double _k = 0.0; // Kalman gain
+  // Debounce counts — asymmetric:
+  // moving closer: commit faster (1 sample)
+  // moving farther: commit slower (3 samples) to avoid flicker on brief drops
+  static const int _debounceCloser = 1;
+  static const int _debounceFarther = 3;
 
-  KalmanDistanceFilter() {
-    _x = 0.0;
-    _p = 1.0;
-  }
+  // ── TX power ───────────────────────────────────────────────────────────────
+  int _txPowerAtOneMeter = -61;
 
-  double filter(int rssi) {
-    // 1. OUTLIER REJECTION (The "Spike Guard")
-    // If the RSSI is -100, it's almost always a transient glitch or a hand
-    // covering the phone. We cap it to maintain filter stability.
-    int sanitizedRssi = rssi.clamp(-95, -30);
+  // ── Public API ─────────────────────────────────────────────────────────────
 
-    // 2. Convert RSSI to Distance using Log-Distance Path Loss Model
-    // Formula: d = 10 ^ ((MeasuredPower - RSSI) / (10 * n))
-    double z = pow(10, (measuredPower - sanitizedRssi) / (10 * n)).toDouble();
+  double filter(int rawRssi, {required bool isPhoneMoving}) {
+    // 1. Median pre-filter
+    _window.add(rawRssi);
+    if (_window.length > _windowSize) _window.removeAt(0);
 
-    // 3. INITIALIZATION
-    if (_x == 0.0) {
-      _x = z;
-      return _x;
+    final double z;
+    if (_window.length < _windowSize) {
+      z = rawRssi.toDouble();
+    } else {
+      final sorted = List<int>.from(_window)..sort();
+      z = sorted[_windowSize ~/ 2].toDouble();
     }
 
-    // 4. KALMAN MATH
-    _p = _p + _q; // Predict
-    _k = _p / (_p + _r); // Gain
-    _x = _x + _k * (z - _x); // Update
-    _p = (1 - _k) * _p; // Covariance update
+    // 2. Asymmetric Kalman
+    // Large jump toward stronger signal = real movement = respond fast
+    // Small change or weakening = could be noise = smooth slowly
+    final double delta = z - _x;
+    final double absDelta = delta.abs();
 
-    return _x.clamp(0.1, 25.0);
+    double q;
+    if (isPhoneMoving && delta > 0) {
+      // Moving + signal improving — maximum responsiveness
+      q = _Qfast;
+    } else if (absDelta > 8.0) {
+      // Large sudden jump in either direction — likely real, respond fast
+      q = _Qfast;
+    } else if (delta > 3.0) {
+      // Moderate improvement — tag getting closer, respond quickly
+      q = _Qfast * 0.5;
+    } else {
+      // Small change or signal drop — smooth it out
+      q = _Qslow;
+    }
+
+    // When phone moving, increase measurement noise (less trust in reading)
+    final double r = isPhoneMoving ? _R * 1.5 : _R;
+
+    _p = _p + q;
+    final double k = _p / (_p + r);
+    _x = _x + k * (z - _x);
+    _p = (1 - k) * _p;
+
+    _updateRange(_x);
+    return _x;
   }
 
-  static DistanceRange getRange(double? distance) {
-    if (distance == null || distance <= 0) return DistanceRange.unknown;
+  DistanceRange getRange(double smoothedRssi) => _currentRange;
 
-    // Adjusted ranges for +9dBm power footprint
-    if (distance < 1.5) return DistanceRange.veryClose;
-    if (distance < 3.5) return DistanceRange.close;
-    if (distance < 7.0) return DistanceRange.near;
-    if (distance < 15.0) return DistanceRange.far;
-    return DistanceRange.veryFar;
+  double estimateDistance(double smoothedRssi) {
+    return pow(
+      10.0,
+      (_txPowerAtOneMeter - smoothedRssi) / (10.0 * 2.7),
+    ).toDouble();
   }
 
   void reset() {
-    _x = 0.0;
+    _x = -70.0;
     _p = 1.0;
+    _window.clear();
+    _currentRange = DistanceRange.unknown;
+    _pendingRange = DistanceRange.unknown;
+    _pendingCount = 0;
+  }
+
+  void updateTxPower(int txPower) => _txPowerAtOneMeter = txPower;
+
+  // ── Private ────────────────────────────────────────────────────────────────
+
+  void _updateRange(double rssi) {
+    const double closeThreshold = -72.0;
+    const double nearThreshold = -85.0;
+
+    // Raw range from thresholds
+    final DistanceRange raw;
+    if (rssi > closeThreshold)
+      raw = DistanceRange.close;
+    else if (rssi > nearThreshold)
+      raw = DistanceRange.near;
+    else
+      raw = DistanceRange.farAway;
+
+    // Hysteresis
+    final DistanceRange candidate = _applyHysteresis(rssi, raw);
+
+    // Asymmetric debounce
+    // Determine if this is a "closer" or "farther" transition
+    final bool isCloserTransition = _isCloser(candidate, _currentRange);
+    final int required = isCloserTransition
+        ? _debounceCloser
+        : _debounceFarther;
+
+    if (candidate == _pendingRange) {
+      _pendingCount++;
+      if (_pendingCount >= required) {
+        _currentRange = _pendingRange;
+      }
+    } else {
+      _pendingRange = candidate;
+      _pendingCount = 1;
+    }
+  }
+
+  // True if newRange is closer than oldRange
+  bool _isCloser(DistanceRange newRange, DistanceRange oldRange) {
+    const order = [
+      DistanceRange.unknown,
+      DistanceRange.farAway,
+      DistanceRange.near,
+      DistanceRange.close,
+    ];
+    return order.indexOf(newRange) > order.indexOf(oldRange);
+  }
+
+  DistanceRange _applyHysteresis(double rssi, DistanceRange raw) {
+    const double closeThreshold = -72.0;
+    const double nearThreshold = -85.0;
+
+    switch (_currentRange) {
+      case DistanceRange.close:
+        if (rssi < closeThreshold - _hysteresis) return DistanceRange.near;
+        return DistanceRange.close;
+
+      case DistanceRange.near:
+        if (rssi > closeThreshold + _hysteresis) return DistanceRange.close;
+        if (rssi < nearThreshold - _hysteresis) return DistanceRange.farAway;
+        return DistanceRange.near;
+
+      case DistanceRange.farAway:
+        if (rssi > nearThreshold + _hysteresis) return DistanceRange.near;
+        return DistanceRange.farAway;
+
+      case DistanceRange.unknown:
+        return raw;
+    }
   }
 }

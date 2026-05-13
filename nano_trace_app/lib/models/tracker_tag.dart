@@ -1,39 +1,42 @@
 class TrackerTag {
-  final String id;           
-  final String tagName;      
-  final String hardwareName; // This stores our 3-byte Stealth ID (e.g., "K\x94\xA2")
-  final String macAddress;   // The full RemoteId (e.g., "8C:FD:49:4B:94:A2")
-  bool alertsEnabled;
-  int maxAlertCount;
+  final String id;
+  final String tagName;
+  final String macAddress;
+  final String token;
+  final String stealthBytes;
   DateTime lastSeen;
 
   TrackerTag({
     required this.id,
     required this.tagName,
-    required this.hardwareName,
     required this.macAddress,
-    this.alertsEnabled = true,
-    this.maxAlertCount = 3,
+    required this.token,
+    required this.stealthBytes,
     required this.lastSeen,
   });
+
+  List<int> get tokenBytes {
+    return List.generate(
+      4,
+      (i) => int.parse(token.substring(i * 2, i * 2 + 2), radix: 16),
+    );
+  }
 
   Map<String, dynamic> toJson() => {
     'id': id,
     'tagName': tagName,
-    'hardwareName': hardwareName,
     'macAddress': macAddress,
-    'alertsEnabled': alertsEnabled,
-    'maxAlertCount': maxAlertCount,
+    'token': token,
+    'stealthBytes': stealthBytes,
     'lastSeen': lastSeen.toIso8601String(),
   };
 
   factory TrackerTag.fromJson(Map<String, dynamic> json) => TrackerTag(
     id: json['id'],
     tagName: json['tagName'],
-    hardwareName: json['hardwareName'],
-    macAddress: json['macAddress'] ?? '', // Fallback for old saved tags
-    alertsEnabled: json['alertsEnabled'] ?? true,
-    maxAlertCount: json['maxAlertCount'] ?? 3,
+    macAddress: json['macAddress'] ?? '',
+    token: json['token'] ?? '',
+    stealthBytes: json['stealthBytes'] ?? '',
     lastSeen: DateTime.parse(json['lastSeen']),
   );
 }
