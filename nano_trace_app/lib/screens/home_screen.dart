@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:nano_trace_app/models/tracker_tag.dart';
-import 'package:nano_trace_app/screens/widgets/tag_list.dart';
+import 'package:nano_trace_app/screens/widgets/home_screen/tag_list.dart';
 import 'package:nano_trace_app/services/storage_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:nano_trace_app/screens/utils/newtag_sheet.dart';

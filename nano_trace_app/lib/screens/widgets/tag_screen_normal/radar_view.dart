@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:nano_trace_app/services/distance_service.dart';
-import '../utils/radar_animation.dart';
+import '../../utils/radar_animation.dart';
 
 class RadarView extends StatelessWidget {
   final Animation<double> animation;

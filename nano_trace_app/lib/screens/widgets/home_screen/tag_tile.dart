@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import '../../models/tracker_tag.dart';
-import '../tag_screen.dart';
+import '../../../models/tracker_tag.dart';
+import '../../tag_screen.dart';
 
 class TagTile extends StatefulWidget {
   final TrackerTag tag;
@@ -65,7 +65,7 @@ class _TagTileState extends State<TagTile> {
 
   void _onFound(int rssi) {
     _lostTimer?.cancel();
-    _lostTimer = Timer(const Duration(seconds: 5), _onLost);
+    _lostTimer = Timer(const Duration(seconds: 10), _onLost);
 
     if (mounted) {
       setState(() {

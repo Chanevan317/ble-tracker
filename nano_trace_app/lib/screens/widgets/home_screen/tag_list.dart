@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../../models/tracker_tag.dart';
+import '../../../models/tracker_tag.dart';
 import 'tag_tile.dart';
 
 class TagList extends StatelessWidget {

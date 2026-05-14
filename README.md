@@ -1,1 +1,1 @@
-# BLE Tracker using ESP32C3
+# BLE Tag using Xiao nRF52840

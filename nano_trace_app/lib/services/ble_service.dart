@@ -56,6 +56,25 @@ class BleService {
     List<TrackerTag> pairedTags,
   ) {
     return FlutterBluePlus.scanResults.map((results) {
+      // Temporary debug — remove after diagnosis
+      for (final r in results) {
+        final name = r.advertisementData.advName;
+        final mfr = r.advertisementData.manufacturerData;
+        if (name.isNotEmpty || mfr.isNotEmpty) {
+          debugPrint(
+            "[SCAN] device=${r.device.remoteId.str} "
+            "name='$name' mfr=${mfr.keys.toList()} "
+            "rssi=${r.rssi}",
+          );
+          mfr.forEach((key, val) {
+            debugPrint(
+              "[SCAN]   key=$key (0x${key.toRadixString(16)}) "
+              "bytes=${val.map((b) => '0x${b.toRadixString(16).padLeft(2, '0')}').toList()}",
+            );
+          });
+        }
+      }
+
       return results.where((r) {
         final name = r.advertisementData.advName;
         final payload = r.advertisementData.manufacturerData[0xFFFF];
@@ -158,6 +177,10 @@ class BleService {
   }
 
   static Future<void> _resumeScan() async {
+    // Wait before restarting — Android throttles if scan starts
+    // too quickly after stopping. 1 second is enough to clear
+    // the throttle window without noticeable UX impact.
+    await Future.delayed(const Duration(milliseconds: 1000));
     try {
       await FlutterBluePlus.startScan(
         continuousUpdates: true,

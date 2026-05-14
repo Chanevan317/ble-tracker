@@ -91,9 +91,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Text("Unpair ${tag.tagName}?"),
         content: const Text(
-          "The app will attempt to factory reset the tag over BLE. "
-          "If the tag is out of range, it will be removed locally only — "
-          "bring it back in range and re-pair to restore it.",
+          "To unpair, the app must connect to the tag and perform a factory reset. "
+          "Make sure the tag is nearby and powered on. "
+          "If the tag cannot be found, it will not be removed.",
         ),
         actions: [
           TextButton(
@@ -123,16 +123,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ).timeout(const Duration(seconds: 12));
     } catch (e) {
       debugPrint("[SETTINGS] Hardware reset failed: $e");
+      hardwareReset = false;
     }
 
-    final current = await StorageService.loadTags();
-    current.removeWhere((t) => t.id == tag.id);
-    await StorageService.saveTags(current);
+    // ONLY remove from storage if the hardware reset was successful
+    if (hardwareReset) {
+      final current = await StorageService.loadTags();
+      current.removeWhere((t) => t.id == tag.id);
+      await StorageService.saveTags(current);
 
-    setState(() {
-      _myTags = current;
-      _isProcessing = false;
-    });
+      setState(() {
+        _myTags = current;
+        _isProcessing = false;
+      });
+    } else {
+      // If it failed, just turn off the loading indicator
+      setState(() => _isProcessing = false);
+    }
 
     if (!mounted) return;
 
@@ -141,13 +148,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         content: Text(
           hardwareReset
               ? "${tag.tagName} unpaired and reset."
-              : "${tag.tagName} removed locally. "
-                    "Bring tag nearby to fully reset it.",
+              : "Failed to unpair. Tag not found or connection lost.",
         ),
+        backgroundColor: hardwareReset ? null : Colors.redAccent,
       ),
     );
 
-    if (_myTags.isEmpty) Navigator.pop(context);
+    // Close settings only if successful and no tags left
+    if (hardwareReset && _myTags.isEmpty) Navigator.pop(context);
   }
 
   // ── Build ────────────────────────────────────────────────────────────────────
